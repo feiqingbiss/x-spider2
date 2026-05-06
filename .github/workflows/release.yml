@@ -11,8 +11,8 @@ concurrency:
 
 env:
   CARGO_INCREMENTAL: 0
-  CARGO_PROFILE_RELEASE_LTO: false   # 关闭链路优化，极大减少链接时间
-  CARGO_PROFILE_RELEASE_PANIC: 'abort' # 减小二进制体积，加快编译
+  CARGO_PROFILE_RELEASE_LTO: false
+  CARGO_PROFILE_RELEASE_PANIC: 'abort'
 
 jobs:
   release:
@@ -22,6 +22,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Git
         run: |
           git config user.name "github-actions[bot]"
@@ -30,7 +31,7 @@ jobs:
       - name: Setup PNPM
         uses: pnpm/action-setup@v3
         with:
-          version: 9.0.0   # 与 package.json 的 packageManager 一致
+          version: 9.0.0
 
       - name: Setup NodeJS
         uses: actions/setup-node@v4
@@ -41,17 +42,15 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript check (并行前置)
+      - name: TypeScript check
         run: pnpm typeCheck
 
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Setup Rust toolchain (官方 action，无弃用警告)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          profile: minimal
-          override: true
 
-      - name: Rust cache (智能缓存)
+      - name: Rust cache (最新版，已移除 set-output)
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
@@ -68,7 +67,7 @@ jobs:
         run: 'pnpm version prerelease -m "chore: Auto release %s"'
 
       - name: Build Tauri app
-        run: pnpm tauri build   # 使用 Tauri CLI 构建，内部调用 Vite 和 Cargo
+        run: pnpm tauri build
 
       - name: Push commits
         run: git push
