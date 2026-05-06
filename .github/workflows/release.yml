@@ -45,12 +45,12 @@ jobs:
       - name: TypeScript check
         run: pnpm typeCheck
 
-      - name: Setup Rust toolchain (官方 action，无弃用警告)
+      - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
 
-      - name: Rust cache (最新版，已移除 set-output)
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
@@ -69,11 +69,11 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build
 
-      - name: Push commits
-        run: git push
-
-      - name: Push tags
-        run: git push --tags
+      - name: Push commits and tags (with rebase)
+        run: |
+          git pull --rebase origin main
+          git push origin main
+          git push --tags
 
       - name: Release
         shell: bash
