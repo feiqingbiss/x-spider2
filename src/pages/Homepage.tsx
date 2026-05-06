@@ -1,13 +1,13 @@
 /* eslint-disable react/prop-types */
 import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { 
-  HistoryOutlined, 
-  DownOutlined, 
+import {
+  HistoryOutlined,
+  DownOutlined,
   UpOutlined,
   FileTextOutlined,
   SyncOutlined,
-  CloudDownloadOutlined
+  CloudDownloadOutlined,
 } from '@ant-design/icons';
 import { PageHeader } from '../components/PageHeader';
 import { PostListGridView } from '../components/homepage/PostListGridView';
@@ -25,13 +25,12 @@ export const Homepage: React.FC = () => {
   const [historyVisible, setHistoryVisible] = useState(true);
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
-  // 批量下载进度
   const [batchProgress, setBatchProgress] = useState<{
     total: number;
     completed: number;
     currentUser: string;
   } | null>(null);
-  
+
   const {
     keyword,
     setKeyword,
@@ -40,16 +39,21 @@ export const Homepage: React.FC = () => {
     loadUser,
     clearPostList: clearMediaList,
   } = useHomepageStore();
-  
-  const { searchHistory, addSearchHistory, clearSearchHistory, cookieString, importHistoryFromFile } =
-    useAppStateStore((s) => ({
-      searchHistory: s.searchHistory,
-      addSearchHistory: s.addSearchHistory,
-      clearSearchHistory: s.clearSearchHistory,
-      cookieString: s.cookieString,
-      importHistoryFromFile: s.importHistoryFromFile,
-    }));
-    
+
+  const {
+    searchHistory,
+    addSearchHistory,
+    clearSearchHistory,
+    cookieString,
+    importHistoryFromFile,
+  } = useAppStateStore((s) => ({
+    searchHistory: s.searchHistory,
+    addSearchHistory: s.addSearchHistory,
+    clearSearchHistory: s.clearSearchHistory,
+    cookieString: s.cookieString,
+    importHistoryFromFile: s.importHistoryFromFile,
+  }));
+
   const searchAbortControllerRef = useRef<AbortController>();
 
   const fetchUserListCount = useCallback(async () => {
@@ -57,7 +61,9 @@ export const Homepage: React.FC = () => {
       const dataDir = await path.appDataDir();
       const filePath = await path.join(dataDir, 'search-user-name.txt');
       const content = await fs.readTextFile(filePath);
-      const count = content.split('\n').filter(line => line.trim().length > 0).length;
+      const count = content
+        .split('\n')
+        .filter((line) => line.trim().length > 0).length;
       setUserListCount(count);
     } catch {
       setUserListCount(0);
@@ -70,17 +76,17 @@ export const Homepage: React.FC = () => {
 
   const cleanUsername = (input: string): string => {
     let text = input.trim();
-    if (!text) return "";
+    if (!text) return '';
     try {
       if (text.includes('x.com') || text.includes('twitter.com')) {
         const urlString = text.startsWith('http') ? text : `https://${text}`;
         const url = new URL(urlString);
-        const pathParts = url.pathname.split('/').filter(p => p.length > 0);
-        if (pathParts.length > 0) return pathParts[0]; 
+        const pathParts = url.pathname.split('/').filter((p) => p.length > 0);
+        if (pathParts.length > 0) return pathParts[0];
       }
       if (text.startsWith('@')) return text.substring(1);
     } catch (e) {
-      console.error("识别用户名失败:", e);
+      console.error('识别用户名失败:', e);
     }
     return text;
   };
@@ -102,7 +108,37 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  const homepageFilter = useHomepageStore(s => s.filter);
+  const homepageFilter = useHomepageStore((s) => s.filter);
+
+  // 辅助函数：从文件中移除指定用户
+  const removeUserFromList = async (username: string) => {
+    try {
+      const dataDir = await path.appDataDir();
+      const filePath = await path.join(dataDir, 'search-user-name.txt');
+      let content = '';
+      try {
+        content = await fs.readTextFile(filePath);
+      } catch (e) {
+        /* 文件不存在 */
+      }
+      const names = content
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/^https?:\/\/x\.com\/?/i, '')
+            .replace(/^@/, '')
+            .trim(),
+        )
+        .filter((n) => n.length > 0 && n !== username);
+      const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
+      await fs.writeTextFile(filePath, newContent);
+      // 更新 UI
+      fetchUserListCount();
+      importHistoryFromFile();
+    } catch (err) {
+      console.error('移除用户失败:', err);
+    }
+  };
 
   const batchDownload = async () => {
     if (!cookieString) {
@@ -113,16 +149,25 @@ export const Homepage: React.FC = () => {
       const dataDir = await path.appDataDir();
       const filePath = await path.join(dataDir, 'search-user-name.txt');
       let content = '';
-      try { content = await fs.readTextFile(filePath); } catch (e) { /* 文件不存在 */ }
-      const usernames = content.split('\n')
-        .map(line => line.replace(/^https?:\/\/x\.com\/?/i, '').replace(/^@/, '').trim())
-        .filter(n => n.length > 0);
+      try {
+        content = await fs.readTextFile(filePath);
+      } catch (e) {
+        /* 文件不存在 */
+      }
+      const usernames = content
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/^https?:\/\/x\.com\/?/i, '')
+            .replace(/^@/, '')
+            .trim(),
+        )
+        .filter((n) => n.length > 0);
       if (usernames.length === 0) {
         message.warning('名单为空，请先添加用户');
         return;
       }
 
-      // 初始化进度
       setBatchProgress({
         total: usernames.length,
         completed: 0,
@@ -135,10 +180,14 @@ export const Homepage: React.FC = () => {
 
       for (let i = 0; i < usernames.length; i++) {
         const name = usernames[i];
-        setBatchProgress(prev => prev ? {
-          ...prev,
-          currentUser: name,
-        } : null);
+        setBatchProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                currentUser: name,
+              }
+            : null,
+        );
         try {
           const user = await getUser(name);
           downloadStore.createCreationTask(user, homepageFilter);
@@ -146,19 +195,37 @@ export const Homepage: React.FC = () => {
         } catch (err: any) {
           console.error(`获取用户 ${name} 失败:`, err);
           failCount++;
-          notification.warning({
-            message: `用户 ${name} 加载失败`,
-            description: err?.message || '未知错误',
-          });
+
+          // 自动移除不存在的用户
+          if (
+            err?.message?.includes('找不到该用户') ||
+            err?.toString().includes('找不到该用户')
+          ) {
+            await removeUserFromList(name);
+            notification.warning({
+              message: `用户 ${name} 不存在，已自动移除`,
+            });
+          } else {
+            notification.warning({
+              message: `用户 ${name} 加载失败`,
+              description: err?.message || '未知错误',
+            });
+          }
         }
-        setBatchProgress(prev => prev ? {
-          ...prev,
-          completed: i + 1,
-        } : null);
+        setBatchProgress((prev) =>
+          prev
+            ? {
+                ...prev,
+                completed: i + 1,
+              }
+            : null,
+        );
       }
 
       setBatchProgress(null);
-      message.success(`批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}`);
+      message.success(
+        `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}`,
+      );
     } catch (err) {
       console.error('批量下载出错:', err);
       setBatchProgress(null);
@@ -169,7 +236,7 @@ export const Homepage: React.FC = () => {
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-white">
       <PageHeader />
-      
+
       <div className="shrink-0 px-4 pb-2">
         {/* 1. 搜索输入区 */}
         <section aria-label="搜索用户">
@@ -179,7 +246,9 @@ export const Homepage: React.FC = () => {
               onPressEnter={() => startSearch(keyword)}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder={cookieString ? '请输入用户 ID 或主页链接' : '请先登录'}
+              placeholder={
+                cookieString ? '请输入用户 ID 或主页链接' : '请先登录'
+              }
               className="text-center"
             />
             <Button
@@ -196,18 +265,31 @@ export const Homepage: React.FC = () => {
           {searchHistory.length > 0 && (
             <div className="mt-1">
               <div className="flex items-center justify-between h-5">
-                <Button 
-                  type="text" 
-                  size="small" 
+                <Button
+                  type="text"
+                  size="small"
                   className="text-gray-400 !p-0 flex items-center"
                   onClick={() => setHistoryVisible(!historyVisible)}
                 >
                   <HistoryOutlined className="mr-1 text-xs" />
-                  <span className="text-[11px]">搜索历史 ({searchHistory.length})</span>
-                  {historyVisible ? <UpOutlined className="ml-1 text-[9px]" /> : <DownOutlined className="ml-1 text-[9px]" />}
+                  <span className="text-[11px]">
+                    搜索历史 ({searchHistory.length})
+                  </span>
+                  {historyVisible ? (
+                    <UpOutlined className="ml-1 text-[9px]" />
+                  ) : (
+                    <DownOutlined className="ml-1 text-[9px]" />
+                  )}
                 </Button>
                 {historyVisible && (
-                  <Button type="link" size="small" onClick={clearSearchHistory} className="!p-0 text-[11px] text-gray-400/60 hover:text-red-400">清空</Button>
+                  <Button
+                    type="link"
+                    size="small"
+                    onClick={clearSearchHistory}
+                    className="!p-0 text-[11px] text-gray-400/60 hover:text-red-400"
+                  >
+                    清空
+                  </Button>
                 )}
               </div>
 
@@ -215,12 +297,15 @@ export const Homepage: React.FC = () => {
                 <div className="mt-1 overflow-x-auto scrollbar-hide bg-gray-50/50 p-1 rounded">
                   <div className="flex flex-nowrap gap-x-4 items-center min-w-max">
                     {searchHistory.map((sn) => (
-                      <Button 
-                        key={sn} 
-                        type="link" 
-                        size="small" 
-                        className="!p-0 text-[12px] text-blue-400 hover:text-blue-600 whitespace-nowrap" 
-                        onClick={() => { setKeyword(sn); startSearch(sn); }}
+                      <Button
+                        key={sn}
+                        type="link"
+                        size="small"
+                        className="!p-0 text-[12px] text-blue-400 hover:text-blue-600 whitespace-nowrap"
+                        onClick={() => {
+                          setKeyword(sn);
+                          startSearch(sn);
+                        }}
                       >
                         {sn}
                       </Button>
@@ -234,8 +319,8 @@ export const Homepage: React.FC = () => {
 
         {/* 2. 批量任务管理条 */}
         <section className="mt-3">
-          <Card 
-            size="small" 
+          <Card
+            size="small"
             className="bg-blue-50/20 border-blue-100/50 shadow-sm"
             bodyStyle={{ padding: '10px 16px' }}
           >
@@ -244,16 +329,16 @@ export const Homepage: React.FC = () => {
                 <span className="text-gray-400 text-sm">已就绪：</span>
                 <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
               </div>
-              
+
               <Space size="middle">
-                <Button 
-                  icon={<FileTextOutlined />} 
+                <Button
+                  icon={<FileTextOutlined />}
                   onClick={() => setManageModalVisible(true)}
                 >
                   管理名单
                 </Button>
-                <Button 
-                  icon={<SyncOutlined />} 
+                <Button
+                  icon={<SyncOutlined />}
                   onClick={async () => {
                     await importHistoryFromFile();
                     message.success('列表已刷新');
@@ -261,9 +346,9 @@ export const Homepage: React.FC = () => {
                 >
                   刷新列表
                 </Button>
-                <Button 
-                  type="primary" 
-                  danger 
+                <Button
+                  type="primary"
+                  danger
                   icon={<CloudDownloadOutlined />}
                   onClick={batchDownload}
                   disabled={!!batchProgress}
@@ -276,9 +361,13 @@ export const Homepage: React.FC = () => {
             {/* 批量下载进度 */}
             {batchProgress && (
               <div className="mt-3">
-                <Progress 
-                  percent={Math.round((batchProgress.completed / batchProgress.total) * 100)} 
-                  format={() => `${batchProgress.completed}/${batchProgress.total}`}
+                <Progress
+                  percent={Math.round(
+                    (batchProgress.completed / batchProgress.total) * 100,
+                  )}
+                  format={() =>
+                    `${batchProgress.completed}/${batchProgress.total}`
+                  }
                   status="active"
                 />
                 <div className="text-xs text-gray-500 mt-1">
@@ -293,15 +382,31 @@ export const Homepage: React.FC = () => {
         {userInfo.data && (
           <div className="mt-4">
             <DownloadController />
-            <section aria-label="用户信息" className="bg-white border-[1px] border-gray-300 rounded-md mt-4 p-4">
-              <a className="flex items-center" href={userInfo.data.screenName ? buildUserUrl(userInfo.data.screenName) : '#'} target="_blank" rel="noreferrer">
+            <section
+              aria-label="用户信息"
+              className="bg-white border-[1px] border-gray-300 rounded-md mt-4 p-4"
+            >
+              <a
+                className="flex items-center"
+                href={
+                  userInfo.data.screenName
+                    ? buildUserUrl(userInfo.data.screenName)
+                    : '#'
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
                 <Avatar src={userInfo.data.avatar} size={50} />
                 <div className="ml-3">
                   <p className="text-base font-bold mb-0">
                     {userInfo.data.name || '未知用户'}
-                    <span className="text-gray-400 font-normal ml-2 text-xs">({userInfo.data.mediaCount || 0} 媒体)</span>
+                    <span className="text-gray-400 font-normal ml-2 text-xs">
+                      ({userInfo.data.mediaCount || 0} 媒体)
+                    </span>
                   </p>
-                  <p className="text-gray-400 text-sm">@{userInfo.data.screenName}</p>
+                  <p className="text-gray-400 text-sm">
+                    @{userInfo.data.screenName}
+                  </p>
                 </div>
               </a>
             </section>
@@ -316,9 +421,9 @@ export const Homepage: React.FC = () => {
         </section>
       )}
 
-      <UserListManager 
-        visible={manageModalVisible} 
-        onClose={() => setManageModalVisible(false)} 
+      <UserListManager
+        visible={manageModalVisible}
+        onClose={() => setManageModalVisible(false)}
         onChanged={fetchUserListCount}
       />
     </div>
