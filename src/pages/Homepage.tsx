@@ -64,6 +64,7 @@ export const Homepage: React.FC = () => {
     return await path.join(baseDir, 'search-user-name.txt');
   };
 
+  // 读取并设置已就绪数量
   const fetchUserListCount = useCallback(async () => {
     try {
       const filePath = await getListFilePath();
@@ -80,6 +81,47 @@ export const Homepage: React.FC = () => {
   useEffect(() => {
     fetchUserListCount();
   }, [fetchUserListCount]);
+
+  // 更新 invalid_folders.txt
+  const updateInvalidFolders = async () => {
+    if (!saveDirBase) return;
+    try {
+      if (!(await fs.exists(saveDirBase))) return;
+
+      const entries = await fs.readDir(saveDirBase);
+      const folderNames = entries
+        .filter((entry) => entry.children !== undefined || entry.name)
+        .map((entry) => entry.name)
+        .filter((name): name is string => !!name);
+
+      if (folderNames.length === 0) return;
+
+      const filePath = await getListFilePath();
+      let listContent = '';
+      try {
+        listContent = await fs.readTextFile(filePath);
+      } catch (e) {}
+
+      const listUsernames = listContent
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/^https?:\/\/x\.com\/?/i, '')
+            .replace(/^@/, '')
+            .trim(),
+        )
+        .filter((n) => n.length > 0);
+
+      const invalidFolders = folderNames.filter(
+        (folder) => !listUsernames.includes(folder),
+      );
+
+      const outputPath = await path.join(saveDirBase, 'invalid_folders.txt');
+      await fs.writeTextFile(outputPath, invalidFolders.join('\n'));
+    } catch (err) {
+      console.error('更新 invalid_folders.txt 失败', err);
+    }
+  };
 
   const cleanUsername = (input: string): string => {
     let text = input.trim();
@@ -117,6 +159,7 @@ export const Homepage: React.FC = () => {
 
   const homepageFilter = useHomepageStore((s) => s.filter);
 
+  // 从文件中移除指定用户
   const removeUserFromList = async (username: string) => {
     try {
       const filePath = await getListFilePath();
@@ -135,11 +178,23 @@ export const Homepage: React.FC = () => {
         .filter((n) => n.length > 0 && n !== username);
       const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
       await fs.writeTextFile(filePath, newContent);
+      // 更新界面计数并刷新搜索历史
       fetchUserListCount();
       importHistoryFromFile();
     } catch (err) {
       console.error('移除用户失败:', err);
     }
+  };
+
+  // 判断错误是否为“用户不存在”（增强匹配）
+  const isUserNotFoundError = (err: any): boolean => {
+    const msg = (err?.message || err?.toString() || '').toLowerCase();
+    return (
+      msg.includes('找不到该用户') ||
+      msg.includes('status=404') ||
+      msg.includes('status=400') || // 有些情况下不存在的用户可能返回 400
+      msg.includes('status=403')    // 被封禁/不存在也可能 403
+    );
   };
 
   const batchDownload = async () => {
@@ -195,10 +250,8 @@ export const Homepage: React.FC = () => {
           console.error(`获取用户 ${name} 失败:`, err);
           failCount++;
 
-          if (
-            err?.message?.includes('找不到该用户') ||
-            err?.toString().includes('找不到该用户')
-          ) {
+          if (isUserNotFoundError(err)) {
+            // 自动移除不存在的用户
             await removeUserFromList(name);
             notification.warning({
               message: `用户 ${name} 不存在，已自动移除`,
@@ -220,6 +273,9 @@ export const Homepage: React.FC = () => {
         );
       }
 
+      // 所有用户处理完后，无论如何都更新 invalid_folders.txt
+      await updateInvalidFolders();
+
       setBatchProgress(null);
       message.success(
         `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}`,
@@ -228,6 +284,8 @@ export const Homepage: React.FC = () => {
       console.error('批量下载出错:', err);
       setBatchProgress(null);
       message.error('批量下载发生未知错误');
+      // 即使出错也尝试更新
+      await updateInvalidFolders().catch(() => {});
     }
   };
 
