@@ -1,0 +1,32 @@
+[package]
+name = "x-spider"
+version = "0.0.0"
+description = "A spider for X (Twitter)"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://rust-lang.org
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "shell-all", "fs-all", "path-all", "os-all", "clipboard-all", "app-all", "dialog-all", "window-all", "notification-all"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 核心修改说明：
+# 1. 添加了 default-features = false 并改用 rustls-tls。
+#    这能让程序不依赖 Windows 的 Schannel 证书管理，从而避开“吊销服务器脱机 (80092013)”的报错。
+# 2. 保留了 json, gzip, cookies 特性以维持爬虫功能。
+reqwest = { version = "0.11", default-features = false, features = ["json", "gzip", "rustls-tls", "cookies"] }
+
+# 强制锁定 time 版本，解决 Rust 编译器版本过新导致的类型推导报错
+time = "=0.3.36" 
+
+[features]
+# this feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
