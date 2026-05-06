@@ -19,6 +19,7 @@ import { path, fs } from '@tauri-apps/api';
 import { getUser } from '../twitter/api';
 import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
+import { useSettingsStore } from '../stores/settings';
 
 export const Homepage: React.FC = () => {
   const { message, notification } = App.useApp();
@@ -56,10 +57,16 @@ export const Homepage: React.FC = () => {
 
   const searchAbortControllerRef = useRef<AbortController>();
 
+  const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
+
+  const getListFilePath = async (): Promise<string> => {
+    const baseDir = saveDirBase || await path.appDataDir();
+    return await path.join(baseDir, 'search-user-name.txt');
+  };
+
   const fetchUserListCount = useCallback(async () => {
     try {
-      const dataDir = await path.appDataDir();
-      const filePath = await path.join(dataDir, 'search-user-name.txt');
+      const filePath = await getListFilePath();
       const content = await fs.readTextFile(filePath);
       const count = content
         .split('\n')
@@ -68,7 +75,7 @@ export const Homepage: React.FC = () => {
     } catch {
       setUserListCount(0);
     }
-  }, []);
+  }, [saveDirBase]); // 注意依赖 saveDirBase 变化时重新读取
 
   useEffect(() => {
     fetchUserListCount();
@@ -110,17 +117,13 @@ export const Homepage: React.FC = () => {
 
   const homepageFilter = useHomepageStore((s) => s.filter);
 
-  // 辅助函数：从文件中移除指定用户
   const removeUserFromList = async (username: string) => {
     try {
-      const dataDir = await path.appDataDir();
-      const filePath = await path.join(dataDir, 'search-user-name.txt');
+      const filePath = await getListFilePath();
       let content = '';
       try {
         content = await fs.readTextFile(filePath);
-      } catch (e) {
-        /* 文件不存在 */
-      }
+      } catch (e) {}
       const names = content
         .split('\n')
         .map((line) =>
@@ -132,7 +135,6 @@ export const Homepage: React.FC = () => {
         .filter((n) => n.length > 0 && n !== username);
       const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
       await fs.writeTextFile(filePath, newContent);
-      // 更新 UI
       fetchUserListCount();
       importHistoryFromFile();
     } catch (err) {
@@ -146,14 +148,11 @@ export const Homepage: React.FC = () => {
       return;
     }
     try {
-      const dataDir = await path.appDataDir();
-      const filePath = await path.join(dataDir, 'search-user-name.txt');
+      const filePath = await getListFilePath();
       let content = '';
       try {
         content = await fs.readTextFile(filePath);
-      } catch (e) {
-        /* 文件不存在 */
-      }
+      } catch (e) {}
       const usernames = content
         .split('\n')
         .map((line) =>
@@ -196,7 +195,6 @@ export const Homepage: React.FC = () => {
           console.error(`获取用户 ${name} 失败:`, err);
           failCount++;
 
-          // 自动移除不存在的用户
           if (
             err?.message?.includes('找不到该用户') ||
             err?.toString().includes('找不到该用户')
@@ -358,7 +356,6 @@ export const Homepage: React.FC = () => {
                 </Button>
               </Space>
             </div>
-            {/* 批量下载进度 */}
             {batchProgress && (
               <div className="mt-3">
                 <Progress

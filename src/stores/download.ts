@@ -388,7 +388,7 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
 }));
 
-const CONSECUTIVE_SKIP_THRESHOLD = 15;
+const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10; // 连续完全跳过的帖子数
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   log().info('Run creation task', task);
@@ -411,6 +411,8 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   const getMediaCounts = R.reduce((acc: number, elem: TwitterPost) => {
     return acc + (elem.medias?.length || 0);
   }, 0);
+
+  let consecutiveSkippedPosts = 0; // 连续完全跳过的帖子计数
 
   while (nextCursor !== null && now.isAfter(since)) {
     if (abortSignal.aborted) {
@@ -452,7 +454,6 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     }
 
     const paramsList: CreateDownloadTaskParams[] = [];
-    let consecutiveSkipCount = 0;
 
     for (const post of filteredPosts) {
       const filteredMedias = post.medias!.filter(
@@ -465,6 +466,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       );
 
       log().info('FilteredMedias', filteredMedias);
+      let allMediaSkippedForPost = true;
       for (const media of filteredMedias) {
         const downloadTask = await prepareDownloadTask({ post, media });
         log().info('Prepared download task', downloadTask);
@@ -472,26 +474,35 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         log().info('Resolved file path', filePath);
         if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
           skipCount++;
-          consecutiveSkipCount++;
           log().info('Skip because sameFileSkip', media);
-          if (consecutiveSkipCount >= CONSECUTIVE_SKIP_THRESHOLD) {
-            log().info(
-              `连续跳过 ${consecutiveSkipCount} 个已存在文件，提前结束用户 ${user.screenName} 的任务`,
-            );
-            updateCreationTask({
-              ...task,
-              completeCount,
-              skipCount,
-            });
-            return;
-          }
-          continue;
+          // 该媒体被跳过，继续检查同帖子下一个媒体
+        } else {
+          // 至少有一个媒体需要下载，该帖子不算完全跳过
+          allMediaSkippedForPost = false;
+          paramsList.push({
+            media,
+            post,
+          });
         }
-        consecutiveSkipCount = 0;
-        paramsList.push({
-          media,
-          post,
-        });
+      }
+
+      if (allMediaSkippedForPost) {
+        consecutiveSkippedPosts++;
+        log().info(`帖子完全跳过，连续跳过帖子数: ${consecutiveSkippedPosts}`);
+        if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
+          log().info(
+            `连续 ${consecutiveSkippedPosts} 个帖子完全跳过，提前结束用户 ${user.screenName} 的任务`,
+          );
+          updateCreationTask({
+            ...task,
+            completeCount,
+            skipCount,
+          });
+          return;
+        }
+      } else {
+        // 有媒体需要下载，重置连续跳过计数
+        consecutiveSkippedPosts = 0;
       }
     }
 

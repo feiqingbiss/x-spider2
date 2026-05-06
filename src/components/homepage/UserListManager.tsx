@@ -5,9 +5,11 @@ import {
   DeleteOutlined,
   FolderOpenOutlined,
   SearchOutlined,
+  DiffOutlined,
 } from '@ant-design/icons';
 import { path, fs, shell } from '@tauri-apps/api';
 import { useAppStateStore } from '../../stores/app-state';
+import { useSettingsStore } from '../../stores/settings';
 
 interface Props {
   visible: boolean;
@@ -25,10 +27,17 @@ export const UserListManager: React.FC<Props> = ({
   const [newUser, setNewUser] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
 
+  const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
+
+  // 获取 search-user-name.txt 路径
+  const getListFilePath = async (): Promise<string> => {
+    const baseDir = saveDirBase || await path.appDataDir();
+    return await path.join(baseDir, 'search-user-name.txt');
+  };
+
   const fetchUsers = async () => {
     try {
-      const rootDir = await path.appDataDir();
-      const filePath = await path.join(rootDir, 'search-user-name.txt');
+      const filePath = await getListFilePath();
       const content = await fs.readTextFile(filePath);
       const lines = content.split('\n');
       const names = lines
@@ -50,8 +59,7 @@ export const UserListManager: React.FC<Props> = ({
   }, [visible]);
 
   const saveUsers = async (newUsers: string[]) => {
-    const rootDir = await path.appDataDir();
-    const filePath = await path.join(rootDir, 'search-user-name.txt');
+    const filePath = await getListFilePath();
     const content = newUsers.map((u) => `https://x.com/${u}`).join('\n');
     await fs.writeTextFile(filePath, content);
     const appStore = useAppStateStore.getState();
@@ -61,15 +69,13 @@ export const UserListManager: React.FC<Props> = ({
 
   const openListFile = async () => {
     try {
-      const rootDir = await path.appDataDir();
-      const filePath = await path.join(rootDir, 'search-user-name.txt');
+      const filePath = await getListFilePath();
       await shell.open(filePath);
     } catch (err) {
       message.error('无法打开名单文件');
     }
   };
 
-  // 提取输入框中的纯用户名
   const extractUsername = (input: string): string => {
     return input
       .trim()
@@ -99,13 +105,11 @@ export const UserListManager: React.FC<Props> = ({
     await saveUsers(newList);
     setUsers(newList);
     message.success(`已移除 ${name}`);
-    // 如果输入框中正是被删除的用户，清空输入框
     if (extractUsername(newUser) === name) {
       setNewUser('');
     }
   };
 
-  // 通过输入框删除
   const handleDeleteByInput = async () => {
     const name = extractUsername(newUser);
     if (!name) {
@@ -119,7 +123,54 @@ export const UserListManager: React.FC<Props> = ({
     await handleDelete(name);
   };
 
-  // 搜索过滤
+  const handleCompareFolders = async () => {
+    if (!saveDirBase) {
+      message.error('请先在设置中配置下载保存路径');
+      return;
+    }
+    try {
+      if (!(await fs.exists(saveDirBase))) {
+        message.error('下载目录不存在，请检查设置');
+        return;
+      }
+
+      const entries = await fs.readDir(saveDirBase);
+      const folderNames = entries
+        .filter((entry) => entry.children !== undefined || entry.name)
+        .map((entry) => entry.name)
+        .filter((name) => !!name);
+
+      if (folderNames.length === 0) {
+        return;
+      }
+
+      const filePath = await getListFilePath();
+      let listContent = '';
+      try {
+        listContent = await fs.readTextFile(filePath);
+      } catch (e) {}
+
+      const listUsernames = listContent
+        .split('\n')
+        .map((line) =>
+          line
+            .replace(/^https?:\/\/x\.com\/?/i, '')
+            .replace(/^@/, '')
+            .trim(),
+        )
+        .filter((n) => n.length > 0);
+
+      const invalidFolders = folderNames.filter(
+        (folder) => !listUsernames.includes(folder),
+      );
+
+      const outputPath = await path.join(saveDirBase, 'invalid_folders.txt');
+      await fs.writeTextFile(outputPath, invalidFolders.join('\n'));
+    } catch (err: any) {
+      message.error(`对比失败：${err?.message || '未知错误'}`);
+    }
+  };
+
   const filteredUsers = useMemo(() => {
     if (!searchKeyword.trim()) return users;
     const kw = searchKeyword.trim().toLowerCase();
@@ -135,14 +186,13 @@ export const UserListManager: React.FC<Props> = ({
       width={500}
     >
       <Space direction="vertical" style={{ width: '100%' }}>
-        {/* 第一行：添加/删除 + 打开文件 */}
         <Space wrap>
           <Input
             placeholder="用户名、@用户名 或链接"
             value={newUser}
             onChange={(e) => setNewUser(e.target.value)}
             onPressEnter={handleAdd}
-            style={{ width: 220 }}
+            style={{ width: 180 }}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
             添加
@@ -157,9 +207,11 @@ export const UserListManager: React.FC<Props> = ({
           <Button icon={<FolderOpenOutlined />} onClick={openListFile}>
             打开文件
           </Button>
+          <Button icon={<DiffOutlined />} onClick={handleCompareFolders}>
+            对比下载目录
+          </Button>
         </Space>
 
-        {/* 第二行：搜索过滤 */}
         <Input
           placeholder="搜索用户名..."
           prefix={<SearchOutlined />}
@@ -168,7 +220,6 @@ export const UserListManager: React.FC<Props> = ({
           allowClear
         />
 
-        {/* 用户列表 */}
         <List
           dataSource={filteredUsers}
           renderItem={(item) => (
