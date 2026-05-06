@@ -15,7 +15,7 @@ import { DownloadController } from '../components/homepage/DownloadController';
 import { useAppStateStore } from '../stores/app-state';
 import { useHomepageStore } from '../stores/homepage';
 import { buildUserUrl } from '../twitter/url';
-import { path, shell, fs } from '@tauri-apps/api';
+import { path, fs } from '@tauri-apps/api';  // ← 移除了未使用的 shell
 import { getUser } from '../twitter/api';
 import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
