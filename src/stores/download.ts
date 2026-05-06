@@ -388,6 +388,11 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
 }));
 
+/**
+ * 连续已存在文件跳过的阈值，达到后认为该用户更旧的媒体都已下载，将提前结束任务
+ */
+const CONSECUTIVE_SKIP_THRESHOLD = 15;
+
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   log().info('Run creation task', task);
   const { filter, user } = task;
@@ -450,6 +455,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     }
 
     const paramsList: CreateDownloadTaskParams[] = [];
+    let consecutiveSkipCount = 0; // 连续因文件已存在而跳过的计数
 
     for (const post of filteredPosts) {
       const filteredMedias = post.medias!.filter(
@@ -469,9 +475,25 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         log().info('Resolved file path', filePath);
         if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
           skipCount++;
+          consecutiveSkipCount++;
           log().info('Skip because sameFileSkip', media);
+          // 连续跳过达到阈值，认为更旧的都已下载，准备提前结束
+          if (consecutiveSkipCount >= CONSECUTIVE_SKIP_THRESHOLD) {
+            log().info(
+              `连续跳过 ${consecutiveSkipCount} 个已存在文件，提前结束用户 ${user.screenName} 的任务`,
+            );
+            // 退出前更新一下当前状态
+            updateCreationTask({
+              ...task,
+              completeCount,
+              skipCount,
+            });
+            return; // 直接结束 runCreationTask，后续调度会移除该任务
+          }
           continue;
         }
+        // 有新文件需要下载，重置连续跳过计数
+        consecutiveSkipCount = 0;
         paramsList.push({
           media,
           post,

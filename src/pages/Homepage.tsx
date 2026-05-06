@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
-import { Avatar, Button, Input, Space, App, Card } from 'antd';
-import React, { useRef, useState } from 'react';
+import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { 
   HistoryOutlined, 
   DownOutlined, 
@@ -15,7 +15,7 @@ import { DownloadController } from '../components/homepage/DownloadController';
 import { useAppStateStore } from '../stores/app-state';
 import { useHomepageStore } from '../stores/homepage';
 import { buildUserUrl } from '../twitter/url';
-import { path, fs } from '@tauri-apps/api';  // ← 移除了未使用的 shell
+import { path, fs } from '@tauri-apps/api';
 import { getUser } from '../twitter/api';
 import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
@@ -24,6 +24,13 @@ export const Homepage: React.FC = () => {
   const { message, notification } = App.useApp();
   const [historyVisible, setHistoryVisible] = useState(true);
   const [manageModalVisible, setManageModalVisible] = useState(false);
+  const [userListCount, setUserListCount] = useState(0);
+  // 批量下载进度
+  const [batchProgress, setBatchProgress] = useState<{
+    total: number;
+    completed: number;
+    currentUser: string;
+  } | null>(null);
   
   const {
     keyword,
@@ -44,6 +51,22 @@ export const Homepage: React.FC = () => {
     }));
     
   const searchAbortControllerRef = useRef<AbortController>();
+
+  const fetchUserListCount = useCallback(async () => {
+    try {
+      const dataDir = await path.appDataDir();
+      const filePath = await path.join(dataDir, 'search-user-name.txt');
+      const content = await fs.readTextFile(filePath);
+      const count = content.split('\n').filter(line => line.trim().length > 0).length;
+      setUserListCount(count);
+    } catch {
+      setUserListCount(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUserListCount();
+  }, [fetchUserListCount]);
 
   const cleanUsername = (input: string): string => {
     let text = input.trim();
@@ -79,10 +102,8 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 获取主页当前的筛选条件
   const homepageFilter = useHomepageStore(s => s.filter);
 
-  // 一键批量下载
   const batchDownload = async () => {
     if (!cookieString) {
       message.error('请先登录');
@@ -101,18 +122,27 @@ export const Homepage: React.FC = () => {
         return;
       }
 
-      const hideLoading = message.loading(`开始批量下载，共 ${usernames.length} 个用户...`, 0);
+      // 初始化进度
+      setBatchProgress({
+        total: usernames.length,
+        completed: 0,
+        currentUser: '',
+      });
+
       const downloadStore = useDownloadStore.getState();
       let successCount = 0;
       let failCount = 0;
 
       for (let i = 0; i < usernames.length; i++) {
         const name = usernames[i];
+        setBatchProgress(prev => prev ? {
+          ...prev,
+          currentUser: name,
+        } : null);
         try {
           const user = await getUser(name);
           downloadStore.createCreationTask(user, homepageFilter);
           successCount++;
-          message.info(`正在处理 ${i+1}/${usernames.length}: ${name} 已加入下载队列`);
         } catch (err: any) {
           console.error(`获取用户 ${name} 失败:`, err);
           failCount++;
@@ -121,11 +151,17 @@ export const Homepage: React.FC = () => {
             description: err?.message || '未知错误',
           });
         }
+        setBatchProgress(prev => prev ? {
+          ...prev,
+          completed: i + 1,
+        } : null);
       }
-      hideLoading();
+
+      setBatchProgress(null);
       message.success(`批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}`);
     } catch (err) {
       console.error('批量下载出错:', err);
+      setBatchProgress(null);
       message.error('批量下载发生未知错误');
     }
   };
@@ -156,7 +192,7 @@ export const Homepage: React.FC = () => {
             </Button>
           </Space.Compact>
 
-          {/* 搜索历史：严格单行横向滚动 */}
+          {/* 搜索历史 */}
           {searchHistory.length > 0 && (
             <div className="mt-1">
               <div className="flex items-center justify-between h-5">
@@ -206,7 +242,7 @@ export const Homepage: React.FC = () => {
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <span className="text-gray-400 text-sm">已就绪：</span>
-                <b className="text-lg text-blue-500 ml-1">{searchHistory.length}</b>
+                <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
               </div>
               
               <Space size="middle">
@@ -230,12 +266,26 @@ export const Homepage: React.FC = () => {
                   danger 
                   icon={<CloudDownloadOutlined />}
                   onClick={batchDownload}
+                  disabled={!!batchProgress}
                   className="font-bold px-6"
                 >
                   一键批量下载
                 </Button>
               </Space>
             </div>
+            {/* 批量下载进度 */}
+            {batchProgress && (
+              <div className="mt-3">
+                <Progress 
+                  percent={Math.round((batchProgress.completed / batchProgress.total) * 100)} 
+                  format={() => `${batchProgress.completed}/${batchProgress.total}`}
+                  status="active"
+                />
+                <div className="text-xs text-gray-500 mt-1">
+                  正在处理：{batchProgress.currentUser}
+                </div>
+              </div>
+            )}
           </Card>
         </section>
 
@@ -266,8 +316,11 @@ export const Homepage: React.FC = () => {
         </section>
       )}
 
-      {/* 管理名单模态框 */}
-      <UserListManager visible={manageModalVisible} onClose={() => setManageModalVisible(false)} />
+      <UserListManager 
+        visible={manageModalVisible} 
+        onClose={() => setManageModalVisible(false)} 
+        onChanged={fetchUserListCount}
+      />
     </div>
   );
 };
