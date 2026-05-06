@@ -9,6 +9,11 @@ concurrency:
   group: release
   cancel-in-progress: true
 
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_RELEASE_LTO: false   # 关闭链路优化，极大减少链接时间
+  CARGO_PROFILE_RELEASE_PANIC: 'abort' # 减小二进制体积，加快编译
+
 jobs:
   release:
     name: Release
@@ -21,35 +26,56 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Setup PNPM
         uses: pnpm/action-setup@v3
+        with:
+          version: 9.0.0   # 与 package.json 的 packageManager 一致
+
       - name: Setup NodeJS
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-      - name: Cache Rust Builds
-        id: cache-rust-builds
-        uses: actions/cache@v4
+          cache: 'pnpm'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check (并行前置)
+        run: pnpm typeCheck
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            src-tauri/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-      - name: Install dependencies
-        run: pnpm i
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Rust cache (智能缓存)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
+          cache-directories: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+
+      - name: Build frontend
+        run: pnpm build
+
       - name: Bump version
         id: bumpVersion
         run: 'pnpm version prerelease -m "chore: Auto release %s"'
-      - name: Build
-        run: pnpm tauri build
+
+      - name: Build Tauri app
+        run: pnpm tauri build   # 使用 Tauri CLI 构建，内部调用 Vite 和 Cargo
+
       - name: Push commits
         run: git push
+
       - name: Push tags
         run: git push --tags
+
       - name: Release
         shell: bash
         env:
@@ -57,6 +83,7 @@ jobs:
         run: |
           VERSION=$(git describe --abbrev=0 --tags)
           gh release create $VERSION ./src-tauri/target/release/bundle/nsis/* --prerelease --notes "该发布为自动构建的预览版本。" --generate-notes --title $VERSION
+
       - name: Cleanup Bundles
         run: |
           rm -Recurse -Force src-tauri/target/release/bundle
