@@ -137,7 +137,7 @@ export const UserListManager: React.FC<Props> = ({
       const folderNames = entries
         .filter((entry) => entry.children !== undefined || entry.name)
         .map((entry) => entry.name)
-        .filter((name) => !!name);
+        .filter((name): name is string => !!name);
 
       if (folderNames.length === 0) {
         return;
