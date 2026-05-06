@@ -93,6 +93,12 @@ async function prepareDownloadTask({
 
 const creationTaskAbortControllerMap = new Map<string, AbortController>();
 
+export interface BatchProgress {
+  total: number;
+  completed: number;
+  currentUser: string;
+}
+
 export interface DownloadStore {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
@@ -120,6 +126,10 @@ export interface DownloadStore {
   createCreationTask: (user: TwitterUser, filter: DownloadFilter) => void;
   removeCreationTask: (id: string) => void;
   updateCreationTask: (task: CreationTask) => void;
+
+  // 批量下载进度（全局状态，跨页面保留）
+  batchProgress: BatchProgress | null;
+  setBatchProgress: (progress: BatchProgress | null) => void;
 }
 
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
@@ -386,9 +396,12 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       }),
     });
   },
+
+  batchProgress: null,
+  setBatchProgress: (progress) => set({ batchProgress: progress }),
 }));
 
-const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10; // 连续完全跳过的帖子数
+const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   log().info('Run creation task', task);
@@ -412,7 +425,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     return acc + (elem.medias?.length || 0);
   }, 0);
 
-  let consecutiveSkippedPosts = 0; // 连续完全跳过的帖子计数
+  let consecutiveSkippedPosts = 0;
 
   while (nextCursor !== null && now.isAfter(since)) {
     if (abortSignal.aborted) {

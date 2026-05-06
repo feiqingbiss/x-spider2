@@ -26,11 +26,10 @@ export const Homepage: React.FC = () => {
   const [historyVisible, setHistoryVisible] = useState(true);
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
-  const [batchProgress, setBatchProgress] = useState<{
-    total: number;
-    completed: number;
-    currentUser: string;
-  } | null>(null);
+
+  // 从全局 store 读取批量进度，跨页面保留
+  const batchProgress = useDownloadStore((s) => s.batchProgress);
+  const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
 
   const {
     keyword,
@@ -64,7 +63,6 @@ export const Homepage: React.FC = () => {
     return await path.join(baseDir, 'search-user-name.txt');
   };
 
-  // 读取并设置已就绪数量
   const fetchUserListCount = useCallback(async () => {
     try {
       const filePath = await getListFilePath();
@@ -82,7 +80,6 @@ export const Homepage: React.FC = () => {
     fetchUserListCount();
   }, [fetchUserListCount]);
 
-  // 更新 invalid_folders.txt
   const updateInvalidFolders = async () => {
     if (!saveDirBase) return;
     try {
@@ -159,7 +156,6 @@ export const Homepage: React.FC = () => {
 
   const homepageFilter = useHomepageStore((s) => s.filter);
 
-  // 从文件中移除指定用户
   const removeUserFromList = async (username: string) => {
     try {
       const filePath = await getListFilePath();
@@ -178,7 +174,6 @@ export const Homepage: React.FC = () => {
         .filter((n) => n.length > 0 && n !== username);
       const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
       await fs.writeTextFile(filePath, newContent);
-      // 更新界面计数并刷新搜索历史
       fetchUserListCount();
       importHistoryFromFile();
     } catch (err) {
@@ -186,14 +181,13 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 判断错误是否为“用户不存在”（增强匹配）
   const isUserNotFoundError = (err: any): boolean => {
     const msg = (err?.message || err?.toString() || '').toLowerCase();
     return (
       msg.includes('找不到该用户') ||
       msg.includes('status=404') ||
-      msg.includes('status=400') || // 有些情况下不存在的用户可能返回 400
-      msg.includes('status=403')    // 被封禁/不存在也可能 403
+      msg.includes('status=400') ||
+      msg.includes('status=403')
     );
   };
 
@@ -234,14 +228,11 @@ export const Homepage: React.FC = () => {
 
       for (let i = 0; i < usernames.length; i++) {
         const name = usernames[i];
-        setBatchProgress((prev) =>
-          prev
-            ? {
-                ...prev,
-                currentUser: name,
-              }
-            : null,
-        );
+        setBatchProgress({
+          total: usernames.length,
+          completed: i,
+          currentUser: name,
+        });
         try {
           const user = await getUser(name);
           downloadStore.createCreationTask(user, homepageFilter);
@@ -251,7 +242,6 @@ export const Homepage: React.FC = () => {
           failCount++;
 
           if (isUserNotFoundError(err)) {
-            // 自动移除不存在的用户
             await removeUserFromList(name);
             notification.warning({
               message: `用户 ${name} 不存在，已自动移除`,
@@ -263,17 +253,13 @@ export const Homepage: React.FC = () => {
             });
           }
         }
-        setBatchProgress((prev) =>
-          prev
-            ? {
-                ...prev,
-                completed: i + 1,
-              }
-            : null,
-        );
+        setBatchProgress({
+          total: usernames.length,
+          completed: i + 1,
+          currentUser: name,
+        });
       }
 
-      // 所有用户处理完后，无论如何都更新 invalid_folders.txt
       await updateInvalidFolders();
 
       setBatchProgress(null);
@@ -284,7 +270,6 @@ export const Homepage: React.FC = () => {
       console.error('批量下载出错:', err);
       setBatchProgress(null);
       message.error('批量下载发生未知错误');
-      // 即使出错也尝试更新
       await updateInvalidFolders().catch(() => {});
     }
   };
@@ -294,7 +279,6 @@ export const Homepage: React.FC = () => {
       <PageHeader />
 
       <div className="shrink-0 px-4 pb-2">
-        {/* 1. 搜索输入区 */}
         <section aria-label="搜索用户">
           <Space.Compact block>
             <Input
@@ -317,7 +301,6 @@ export const Homepage: React.FC = () => {
             </Button>
           </Space.Compact>
 
-          {/* 搜索历史 */}
           {searchHistory.length > 0 && (
             <div className="mt-1">
               <div className="flex items-center justify-between h-5">
@@ -373,7 +356,6 @@ export const Homepage: React.FC = () => {
           )}
         </section>
 
-        {/* 2. 批量任务管理条 */}
         <section className="mt-3">
           <Card
             size="small"
@@ -433,7 +415,6 @@ export const Homepage: React.FC = () => {
           </Card>
         </section>
 
-        {/* 3. 用户信息预览 & 下载配置 */}
         {userInfo.data && (
           <div className="mt-4">
             <DownloadController />
@@ -469,7 +450,6 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 4. 图片预览区 */}
       {userInfo.data && (
         <section className="relative grow overflow-hidden bg-gray-50 border-t border-gray-100">
           <PostListGridView />
