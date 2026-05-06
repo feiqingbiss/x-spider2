@@ -22,7 +22,6 @@ export interface AppStateStore {
   setSystemProxyUrl: (url: string) => void;
 }
 
-// 获取 search-user-name.txt 的完整路径
 async function getListFilePath(): Promise<string> {
   const settings = useSettingsStore.getState();
   const baseDir = settings.download.saveDirBase || await appDataDir();

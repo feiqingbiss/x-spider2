@@ -29,7 +29,6 @@ export const UserListManager: React.FC<Props> = ({
 
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
-  // 获取 search-user-name.txt 路径
   const getListFilePath = async (): Promise<string> => {
     const baseDir = saveDirBase || await path.appDataDir();
     return await path.join(baseDir, 'search-user-name.txt');

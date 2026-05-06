@@ -69,7 +69,7 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build
 
-      - name: Push commits and tags (with rebase)
+      - name: Push commits and tags
         run: |
           git pull --rebase origin main
           git push origin main

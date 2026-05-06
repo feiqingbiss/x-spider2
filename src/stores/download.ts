@@ -475,9 +475,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
           skipCount++;
           log().info('Skip because sameFileSkip', media);
-          // 该媒体被跳过，继续检查同帖子下一个媒体
         } else {
-          // 至少有一个媒体需要下载，该帖子不算完全跳过
           allMediaSkippedForPost = false;
           paramsList.push({
             media,
@@ -501,7 +499,6 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           return;
         }
       } else {
-        // 有媒体需要下载，重置连续跳过计数
         consecutiveSkippedPosts = 0;
       }
     }

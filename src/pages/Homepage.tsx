@@ -75,7 +75,7 @@ export const Homepage: React.FC = () => {
     } catch {
       setUserListCount(0);
     }
-  }, [saveDirBase]); // 注意依赖 saveDirBase 变化时重新读取
+  }, [saveDirBase]);
 
   useEffect(() => {
     fetchUserListCount();
