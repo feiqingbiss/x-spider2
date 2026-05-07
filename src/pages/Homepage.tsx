@@ -21,13 +21,14 @@ import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
 
+const TIMEOUT_MS = 30000; // 30秒超时
+
 export const Homepage: React.FC = () => {
   const { message, notification } = App.useApp();
   const [historyVisible, setHistoryVisible] = useState(true);
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
 
-  // 从全局 store 读取批量进度，跨页面保留
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
 
@@ -191,6 +192,25 @@ export const Homepage: React.FC = () => {
     );
   };
 
+  // 带超时的请求封装
+  const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`请求超时（超过${timeoutMs / 1000}秒）`));
+      }, timeoutMs);
+
+      promise
+        .then((result) => {
+          clearTimeout(timer);
+          resolve(result);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  };
+
   const batchDownload = async () => {
     if (!cookieString) {
       message.error('请先登录');
@@ -225,6 +245,7 @@ export const Homepage: React.FC = () => {
       const downloadStore = useDownloadStore.getState();
       let successCount = 0;
       let failCount = 0;
+      let timeoutCount = 0;
 
       for (let i = 0; i < usernames.length; i++) {
         const name = usernames[i];
@@ -234,14 +255,20 @@ export const Homepage: React.FC = () => {
           currentUser: name,
         });
         try {
-          const user = await getUser(name);
+          const user = await withTimeout(getUser(name), TIMEOUT_MS);
           downloadStore.createCreationTask(user, homepageFilter);
           successCount++;
         } catch (err: any) {
           console.error(`获取用户 ${name} 失败:`, err);
           failCount++;
 
-          if (isUserNotFoundError(err)) {
+          if (err?.message?.includes('超时')) {
+            timeoutCount++;
+            notification.warning({
+              message: `用户 ${name} 请求超时，已暂时跳过`,
+              description: err.message,
+            });
+          } else if (isUserNotFoundError(err)) {
             await removeUserFromList(name);
             notification.warning({
               message: `用户 ${name} 不存在，已自动移除`,
@@ -263,8 +290,9 @@ export const Homepage: React.FC = () => {
       await updateInvalidFolders();
 
       setBatchProgress(null);
+      const extraMsg = timeoutCount > 0 ? `，超时跳过 ${timeoutCount} 个` : '';
       message.success(
-        `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}`,
+        `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}${extraMsg}`,
       );
     } catch (err) {
       console.error('批量下载出错:', err);
