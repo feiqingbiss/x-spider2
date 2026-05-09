@@ -16,6 +16,7 @@ import { resolveVariables } from '../utils/file-name-template';
 import { FileNameTemplateData } from '../interfaces/FileNameTemplateData';
 import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
+import { delay } from '../utils';
 
 let _log: ICategoriedLogger;
 
@@ -405,6 +406,7 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 }));
 
 const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
+const INITIAL_EMPTY_RETRY_DELAY = 2000; // 首次空结果重试延迟 2 秒
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   log().info('Run creation task', task);
@@ -429,6 +431,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   }, 0);
 
   let consecutiveSkippedPosts = 0;
+  let retriedInitialEmpty = false; // 标记是否已对首次空结果进行了重试
 
   while (nextCursor !== null && now.isAfter(since)) {
     if (abortSignal.aborted) {
@@ -438,6 +441,119 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     log().info('CreationTask fetching', nextCursor);
     const { twitterPosts, cursor } = await getListFn(user.id, nextCursor);
     if (abortSignal.aborted) break;
+
+    // 处理首次获取为空的情况，可能是临时问题，尝试重试一次
+    if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
+      log().warn('首次获取帖子列表为空，等待 ${INITIAL_EMPTY_RETRY_DELAY}ms 后重试');
+      await delay(INITIAL_EMPTY_RETRY_DELAY);
+      retriedInitialEmpty = true;
+      // 重新获取，使用相同的 cursor（初始为 undefined）
+      const retryResult = await getListFn(user.id, undefined);
+      if (abortSignal.aborted) break;
+      // 使用重试后的结果继续
+      if (retryResult.twitterPosts.length > 0) {
+        // 重试成功，使用新结果
+        nextCursor = retryResult.cursor;
+        now = R.last(retryResult.twitterPosts)?.createdAt || now;
+        log().info('重试后获取到帖子，继续');
+        // 直接处理重试后的帖子
+        const filteredPosts = retryResult.twitterPosts.filter(/* ... */);
+        // 为了代码简洁，重新组织流程：我们将重试后的帖子插入到循环开始处理
+        // 这里将重试结果赋值给 local 变量，然后跳过原本的 cursor 更新，直接处理
+        // 下面的代码会基于新的 twitterPosts 和 cursor
+        // 我们用 continue 跳出当前迭代，然后重新进入循环头部处理
+        // 但是 while 条件会检查 nextCursor，现在 nextCursor 还是 undefined，会继续循环
+        // 所以我们可以直接修改 nextCursor 和 twitterPosts 变量并进入处理逻辑
+        // 简便方式：将重试结果包装一下，然后 continue 让循环重新获取
+        // 但我们已经调用了 getListFn，不想再调一次，所以直接在这里处理：
+        // 下面将处理逻辑抽取为局部函数或重复代码
+        // 为了保持代码简单，我们直接在重试分支中处理 retryResult
+        const retryFilteredPosts = retryResult.twitterPosts.filter(
+          R.allPass([
+            (post) => (post.medias ? post.medias.length >= 0 : false),
+            (post) => {
+              if (!post.createdAt) return true;
+              return until ? post.createdAt.isBefore(until) : true;
+            },
+            (post) => {
+              if (!post.createdAt) return true;
+              return since ? post.createdAt.isAfter(since) : true;
+            },
+          ]),
+        );
+
+        const retryFilteredCount =
+          getMediaCounts(retryResult.twitterPosts) - getMediaCounts(retryFilteredPosts);
+        skipCount += retryFilteredCount;
+
+        if (retryFilteredPosts.length > 0) {
+          const paramsList: CreateDownloadTaskParams[] = [];
+          for (const post of retryFilteredPosts) {
+            const filteredMedias = post.medias!.filter(
+              R.allPass([
+                (media) => {
+                  if (!filter.mediaTypes) return false;
+                  return filter.mediaTypes.includes(media.type);
+                },
+              ]),
+            );
+
+            let allExistingSkipped = true;
+            let hasAnyError = false;
+            for (const media of filteredMedias) {
+              try {
+                const downloadTask = await prepareDownloadTask({ post, media });
+                const filePath = await path.join(downloadTask.dir, downloadTask.fileName);
+                if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+                  skipCount++;
+                  log().info('Skip because sameFileSkip', media);
+                } else {
+                  allExistingSkipped = false;
+                  paramsList.push({ media, post });
+                }
+              } catch (err: any) {
+                log().error('准备下载任务失败，跳过媒体', media, err);
+                skipCount++;
+                allExistingSkipped = false;
+                hasAnyError = true;
+              }
+            }
+
+            if (allExistingSkipped && !hasAnyError) {
+              consecutiveSkippedPosts++;
+              if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
+                log().info(`连续跳过帖子达到阈值，提前结束`);
+                updateCreationTask({ ...task, completeCount, skipCount });
+                return;
+              }
+            } else {
+              consecutiveSkippedPosts = 0;
+            }
+          }
+
+          if (paramsList.length > 0) {
+            await batchCreateDownloadTask(paramsList);
+            completeCount += paramsList.length;
+          }
+          updateCreationTask({ ...task, completeCount, skipCount });
+        } else {
+          updateCreationTask({ ...task, completeCount, skipCount });
+        }
+
+        // 更新 nextCursor 为 retryResult.cursor
+        nextCursor = retryResult.cursor;
+        now = R.last(retryResult.twitterPosts)?.createdAt || now;
+        if (abortSignal.aborted) break;
+        continue; // 进入下一次循环
+      } else {
+        // 重试后仍为空，正常退出任务
+        log().info('重试后仍无帖子，任务结束');
+        updateCreationTask({ ...task, completeCount, skipCount });
+        return;
+      }
+    }
+
+    // 正常的后续处理
     nextCursor = cursor;
     now = R.last(twitterPosts)?.createdAt || now;
     log().info('Now', now.format('YYYY-MM-DD'), 'next cursor', nextCursor);
@@ -482,7 +598,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       );
 
       log().info('FilteredMedias', filteredMedias);
-      let allExistingSkipped = true; // 假设所有媒体都是因为文件已存在而跳过
+      let allExistingSkipped = true;
       let hasAnyError = false;
 
       for (const media of filteredMedias) {
@@ -492,9 +608,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
             skipCount++;
             log().info('Skip because sameFileSkip', media);
-            // 文件已存在跳过，不影响 allExistingSkipped，保持 true 直到有非跳过
           } else {
-            // 文件不存在，准备下载
             allExistingSkipped = false;
             paramsList.push({
               media,
@@ -502,22 +616,19 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
             });
           }
         } catch (err: any) {
-          // 准备任务失败（例如获取下载链接失败），跳过该媒体
           log().error('准备下载任务失败，跳过媒体', media, err);
           skipCount++;
-          hasAnyError = true;
-          // 该媒体因错误跳过，不算在文件已存在跳过，所以 allExistingSkipped 应设为 false（因为不是全部由文件已存在导致）
           allExistingSkipped = false;
+          hasAnyError = true;
         }
       }
 
       if (allExistingSkipped && !hasAnyError) {
-        // 所有媒体都因文件已存在而被跳过
         consecutiveSkippedPosts++;
-        log().info(`帖子完全跳过（文件已存在），连续跳过帖子数: ${consecutiveSkippedPosts}`);
+        log().info(`帖子完全跳过，连续跳过帖子数: ${consecutiveSkippedPosts}`);
         if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
           log().info(
-            `连续 ${consecutiveSkippedPosts} 个帖子文件已存在，提前结束用户 ${user.screenName} 的任务`,
+            `连续 ${consecutiveSkippedPosts} 个帖子完全跳过，提前结束用户 ${user.screenName} 的任务`,
           );
           updateCreationTask({
             ...task,
@@ -527,7 +638,6 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           return;
         }
       } else {
-        // 有媒体需要下载，或出现了错误，重置连续跳过计数
         consecutiveSkippedPosts = 0;
       }
     }
