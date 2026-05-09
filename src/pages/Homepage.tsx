@@ -21,7 +21,7 @@ import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
 
-const TIMEOUT_MS = 30000; // 30秒超时
+const TIMEOUT_MS = 30000;
 
 export const Homepage: React.FC = () => {
   const { message, notification } = App.useApp();
@@ -46,13 +46,11 @@ export const Homepage: React.FC = () => {
     addSearchHistory,
     clearSearchHistory,
     cookieString,
-    importHistoryFromFile,
   } = useAppStateStore((s) => ({
     searchHistory: s.searchHistory,
     addSearchHistory: s.addSearchHistory,
     clearSearchHistory: s.clearSearchHistory,
     cookieString: s.cookieString,
-    importHistoryFromFile: s.importHistoryFromFile,
   }));
 
   const searchAbortControllerRef = useRef<AbortController>();
@@ -64,43 +62,12 @@ export const Homepage: React.FC = () => {
     return await path.join(baseDir, 'search-user-name.txt');
   };
 
-  const fetchUserListCount = useCallback(async () => {
+  // 从文件读取用户名列表（不影响搜索历史）
+  const readUsernamesFromFile = async (): Promise<string[]> => {
     try {
       const filePath = await getListFilePath();
       const content = await fs.readTextFile(filePath);
-      const count = content
-        .split('\n')
-        .filter((line) => line.trim().length > 0).length;
-      setUserListCount(count);
-    } catch {
-      setUserListCount(0);
-    }
-  }, [saveDirBase]);
-
-  useEffect(() => {
-    fetchUserListCount();
-  }, [fetchUserListCount]);
-
-  const updateInvalidFolders = async () => {
-    if (!saveDirBase) return;
-    try {
-      if (!(await fs.exists(saveDirBase))) return;
-
-      const entries = await fs.readDir(saveDirBase);
-      const folderNames = entries
-        .filter((entry) => entry.children !== undefined || entry.name)
-        .map((entry) => entry.name)
-        .filter((name): name is string => !!name);
-
-      if (folderNames.length === 0) return;
-
-      const filePath = await getListFilePath();
-      let listContent = '';
-      try {
-        listContent = await fs.readTextFile(filePath);
-      } catch (e) {}
-
-      const listUsernames = listContent
+      return content
         .split('\n')
         .map((line) =>
           line
@@ -109,9 +76,46 @@ export const Homepage: React.FC = () => {
             .trim(),
         )
         .filter((n) => n.length > 0);
+    } catch {
+      return [];
+    }
+  };
 
-      const invalidFolders = folderNames.filter(
-        (folder) => !listUsernames.includes(folder),
+  // 更新已就绪数字
+  const fetchUserListCount = useCallback(async () => {
+    const names = await readUsernamesFromFile();
+    setUserListCount(names.length);
+  }, [saveDirBase]);
+
+  useEffect(() => {
+    fetchUserListCount();
+  }, [fetchUserListCount]);
+
+  // 刷新列表：仅刷新数字，不影响搜索历史
+  const handleRefresh = async () => {
+    await fetchUserListCount();
+    message.success('已就绪数量已更新（搜索历史不变）');
+  };
+
+  const updateInvalidFolders = async () => {
+    if (!saveDirBase) return;
+    try {
+      if (!(await fs.exists(saveDirBase))) return;
+
+      const entries = await fs.readDir(saveDirBase);
+      const folderNames = entries
+        .filter((entry) => entry.children !== undefined)
+        .map((entry) => entry.name)
+        .filter((name): name is string => !!name && name !== 'undefined');
+
+      const uniqueFolders = Array.from(new Set(folderNames));
+      if (uniqueFolders.length === 0) return;
+
+      const listUsernames = await readUsernamesFromFile();
+      const usernameSet = new Set(listUsernames);
+
+      const invalidFolders = uniqueFolders.filter(
+        (folder) => !usernameSet.has(folder),
       );
 
       const outputPath = await path.join(saveDirBase, 'invalid_folders.txt');
@@ -175,8 +179,8 @@ export const Homepage: React.FC = () => {
         .filter((n) => n.length > 0 && n !== username);
       const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
       await fs.writeTextFile(filePath, newContent);
-      fetchUserListCount();
-      importHistoryFromFile();
+      // 更新已就绪数量，不影响搜索历史
+      await fetchUserListCount();
     } catch (err) {
       console.error('移除用户失败:', err);
     }
@@ -192,7 +196,6 @@ export const Homepage: React.FC = () => {
     );
   };
 
-  // 带超时的请求封装
   const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -405,10 +408,7 @@ export const Homepage: React.FC = () => {
                 </Button>
                 <Button
                   icon={<SyncOutlined />}
-                  onClick={async () => {
-                    await importHistoryFromFile();
-                    message.success('列表已刷新');
-                  }}
+                  onClick={handleRefresh}
                 >
                   刷新列表
                 </Button>

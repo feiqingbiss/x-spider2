@@ -8,7 +8,6 @@ import {
   DiffOutlined,
 } from '@ant-design/icons';
 import { path, fs, shell } from '@tauri-apps/api';
-import { useAppStateStore } from '../../stores/app-state';
 import { useSettingsStore } from '../../stores/settings';
 
 interface Props {
@@ -61,8 +60,7 @@ export const UserListManager: React.FC<Props> = ({
     const filePath = await getListFilePath();
     const content = newUsers.map((u) => `https://x.com/${u}`).join('\n');
     await fs.writeTextFile(filePath, content);
-    const appStore = useAppStateStore.getState();
-    appStore.importHistoryFromFile();
+    // 不再调用 importHistoryFromFile，只在外部通知数量变化
     onChanged?.();
   };
 
