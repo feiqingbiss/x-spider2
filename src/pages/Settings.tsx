@@ -25,10 +25,12 @@ export const Settings: React.FC = () => {
       };
 
       const logDir = await path.appLogDir();
-      // 确保日志目录存在
       if (!(await fs.exists(logDir))) {
         await fs.createDir(logDir, { recursive: true });
       }
+
+      // 给日志缓冲区一点时间写入磁盘（Logger 有 500ms 延迟）
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       let logContent = '';
       const entries = await fs.readDir(logDir);

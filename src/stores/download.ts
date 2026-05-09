@@ -25,6 +25,14 @@ function log() {
   return _log;
 }
 
+// 强制刷新日志缓冲区到文件（Logger 内部有 500ms 延迟）
+function flushLog() {
+  // 通过发送一条紧急日志触发写入
+  setTimeout(() => {
+    log().info('--- 强制刷新日志 ---');
+  }, 0);
+}
+
 export interface CreateDownloadTaskParams {
   post: TwitterPost;
   media: TwitterMedia;
@@ -93,14 +101,11 @@ export interface BatchProgress {
 export interface DownloadStore {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
-
   downloadTasks: DownloadTask[];
   autoSyncTaskIds: string[];
   setAutoSyncTaskIds: (ids: string[]) => void;
   createDownloadTask: (params: CreateDownloadTaskParams) => Promise<void>;
-  batchCreateDownloadTask: (
-    paramsList: CreateDownloadTaskParams[],
-  ) => Promise<void>;
+  batchCreateDownloadTask: (paramsList: CreateDownloadTaskParams[]) => Promise<void>;
   pauseDownloadTask: (gid: string) => Promise<void>;
   pauseAllDownloadTask: () => Promise<void>;
   unpauseDownloadTask: (gid: string) => Promise<void>;
@@ -112,12 +117,10 @@ export interface DownloadStore {
   batchUpdateDownloadTasks: (tasks: DownloadTask[]) => void;
   redownloadTask: (gid: string) => Promise<void>;
   batchRedownloadTask: (gid: string[]) => Promise<void>;
-
   creationTasks: CreationTask[];
   createCreationTask: (user: TwitterUser, filter: DownloadFilter) => void;
   removeCreationTask: (id: string) => void;
   updateCreationTask: (task: CreationTask) => void;
-
   batchProgress: BatchProgress | null;
   setBatchProgress: (progress: BatchProgress | null) => void;
 }
@@ -125,17 +128,12 @@ export interface DownloadStore {
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
   currentTab: '',
   setCurrentTab: (tab) => set({ currentTab: tab }),
-
   autoSyncTaskIds: [],
   setAutoSyncTaskIds: (ids) => set({ autoSyncTaskIds: ids }),
-
   downloadTasks: [],
   createDownloadTask: async (params) => {
     const task = await prepareDownloadTask(params);
-    const gid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
-      dir: task.dir,
-      out: task.fileName,
-    });
+    const gid = await aria2.invoke('aria2.addUri', [task.downloadUrl], { dir: task.dir, out: task.fileName });
     task.gid = gid;
     const status = await aria2.tellStatus(task.gid);
     task.status = status.status;
@@ -143,366 +141,267 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
   updateDownloadTask: (task, now = Date.now()) => {
     const oldTasks = get().downloadTasks;
-    const oldTaskIndex = oldTasks.findIndex((t) => t.gid === task.gid);
-    if (oldTaskIndex === -1) return;
-    if (oldTasks[oldTaskIndex].updatedAt > now) return;
-    const newTasks = R.adjust(oldTaskIndex, R.always(task))(oldTasks);
-    set({ downloadTasks: newTasks });
+    const idx = oldTasks.findIndex(t => t.gid === task.gid);
+    if (idx === -1 || oldTasks[idx].updatedAt > now) return;
+    set({ downloadTasks: R.adjust(idx, R.always(task))(oldTasks) });
   },
   batchUpdateDownloadTasks: (tasks) => {
-    const { downloadTasks: oldTasks } = get();
-    const pairs = tasks.map((t): [string, DownloadTask] => [t.gid, t]);
-    const newTaskMap: Record<string, DownloadTask> = R.fromPairs(pairs);
-    const newTasks = oldTasks.map((old) => {
-      const n = newTaskMap[old.gid];
-      if (!n || n.updatedAt < old.updatedAt) return old;
-      return n;
-    });
-    set({ downloadTasks: newTasks });
+    const { downloadTasks: old } = get();
+    const map = R.fromPairs(tasks.map(t => [t.gid, t] as [string, DownloadTask]));
+    set({ downloadTasks: old.map(o => (map[o.gid]?.updatedAt >= o.updatedAt ? map[o.gid] : o)) });
   },
   batchCreateDownloadTask: async (paramsList) => {
     const tasks: DownloadTask[] = [];
-    for (const params of paramsList) {
-      try {
-        tasks.push(await prepareDownloadTask(params));
-      } catch (err: any) {
-        log().error('准备下载任务失败，跳过', params.media, err);
-      }
+    for (const p of paramsList) {
+      try { tasks.push(await prepareDownloadTask(p)); }
+      catch (e: any) { log().error('prepare failed', p.media, e); }
     }
-    if (tasks.length === 0) return;
-
-    const gids: string[] = (
-      await aria2.batchInvoke(
-        tasks.map((t) => ({
-          methodName: 'aria2.addUri',
-          params: [[t.downloadUrl], { dir: t.dir, out: t.fileName }],
-        })),
-      )
-    ).flat();
-
+    if (!tasks.length) return;
+    const gids = (await aria2.batchInvoke(tasks.map(t => ({
+      methodName: 'aria2.addUri',
+      params: [[t.downloadUrl], { dir: t.dir, out: t.fileName }],
+    })))).flat();
     const statusMap = await aria2.tellStatus(gids);
-    tasks.forEach((t, i) => {
-      t.gid = gids[i];
-      t.status = statusMap[t.gid].status;
-    });
-
+    tasks.forEach((t, i) => { t.gid = gids[i]; t.status = statusMap[t.gid].status; });
     set({ downloadTasks: get().downloadTasks.concat(tasks) });
   },
-  pauseDownloadTask: async (gid) => {
-    await aria2.invoke('aria2.pause', gid);
-  },
-  pauseAllDownloadTask: async () => {
-    await aria2.invoke('aria2.pauseAll');
-  },
-  unpauseDownloadTask: async (gid) => {
-    await aria2.invoke('aria2.unpause', gid);
-  },
-  unpauseAllDownloadTask: async () => {
-    await aria2.invoke('aria2.unpauseAll');
-  },
+  pauseDownloadTask: async (gid) => { await aria2.invoke('aria2.pause', gid); },
+  pauseAllDownloadTask: async () => { await aria2.invoke('aria2.pauseAll'); },
+  unpauseDownloadTask: async (gid) => { await aria2.invoke('aria2.unpause', gid); },
+  unpauseAllDownloadTask: async () => { await aria2.invoke('aria2.unpauseAll'); },
   removeDownloadTask: async (gid) => {
-    aria2.invoke('aria2.remove', gid).catch((err) => {
-      log().warn('Remove aria2 task failed', { gid, err });
-    });
-    const state = get();
-    set({
-      downloadTasks: state.downloadTasks.filter((v) => v.gid !== gid),
-      autoSyncTaskIds: state.autoSyncTaskIds.filter((v) => v !== gid),
-    });
+    aria2.invoke('aria2.remove', gid).catch(e => log().warn('remove failed', gid, e));
+    const s = get();
+    set({ downloadTasks: s.downloadTasks.filter(v => v.gid !== gid), autoSyncTaskIds: s.autoSyncTaskIds.filter(v => v !== gid) });
   },
   batchRemoveDownloadTasks: async (gids) => {
-    aria2
-      .batchInvoke(
-        gids.map((gid) => ({ methodName: 'aria2.remove', params: [gid] })),
-      )
-      .catch((err) => {
-        log().error({ gids, err });
-      });
-    set({
-      downloadTasks: get().downloadTasks.filter(
-        (v: DownloadTask) => !gids.includes(v.gid),
-      ),
-    });
+    aria2.batchInvoke(gids.map(g => ({ methodName: 'aria2.remove', params: [g] }))).catch(e => log().error(gids, e));
+    set({ downloadTasks: get().downloadTasks.filter(v => !gids.includes(v.gid)) });
   },
   redownloadTask: async (gid) => {
-    const store = get();
-    const oldTask = store.downloadTasks.find((t) => t.gid === gid);
-    if (!oldTask) throw new Error('找不到旧的下载任务');
-    await store.removeDownloadTask(oldTask.gid);
-    await store.createDownloadTask({ post: oldTask.post, media: oldTask.media });
+    const s = get();
+    const old = s.downloadTasks.find(t => t.gid === gid);
+    if (!old) throw new Error('task not found');
+    await s.removeDownloadTask(gid);
+    await s.createDownloadTask({ post: old.post, media: old.media });
   },
   batchRedownloadTask: async (gids) => {
-    const store = get();
-    const oldTasks = store.downloadTasks.filter((t) => gids.includes(t.gid));
-    if (oldTasks.length === 0) throw new Error('找不到旧的下载任务');
-    await store.batchRemoveDownloadTasks(gids);
-    await store.batchCreateDownloadTask(
-      oldTasks.map((t) => ({ media: t.media, post: t.post })),
-    );
+    const s = get();
+    const olds = s.downloadTasks.filter(t => gids.includes(t.gid));
+    if (!olds.length) throw new Error('no tasks');
+    await s.batchRemoveDownloadTasks(gids);
+    await s.batchCreateDownloadTask(olds.map(t => ({ media: t.media, post: t.post })));
   },
   syncDownloadTaskStatus: async (gid) => {
     const { downloadTasks, updateDownloadTask, removeDownloadTask } = get();
-    const index = downloadTasks.findIndex((v) => v.gid === gid);
-    if (index === -1) return;
-    const task = downloadTasks[index];
+    const task = downloadTasks.find(v => v.gid === gid);
+    if (!task) return;
     const now = Date.now();
     const status = await aria2.tellStatus(gid);
-
     if (status.status === 'error') {
       if (task.ariaRetryCountRemains > 0) {
-        log().warn(
-          `Task download failed, retry it. RetryCountRemains: ${task.ariaRetryCountRemains}`,
-          task,
-        );
-        removeDownloadTask(task.gid);
-
-        const newTask = await prepareDownloadTask({
-          post: task.post,
-          media: task.media,
-        });
+        log().warn(`Retry download ${task.ariaRetryCountRemains}`, task);
+        removeDownloadTask(gid);
+        const newTask = await prepareDownloadTask({ post: task.post, media: task.media });
         newTask.ariaRetryCountRemains = task.ariaRetryCountRemains - 1;
-
-        const gid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
-          dir: newTask.dir,
-          out: newTask.fileName,
-        });
-        newTask.gid = gid;
-
-        const status = await aria2.tellStatus(task.gid);
-        newTask.status = status.status;
-
-        set({
-          downloadTasks: get().downloadTasks.concat(newTask),
-        });
+        const newGid = await aria2.invoke('aria2.addUri', [task.downloadUrl], { dir: newTask.dir, out: newTask.fileName });
+        newTask.gid = newGid;
+        newTask.status = (await aria2.tellStatus(newGid)).status;
+        set({ downloadTasks: get().downloadTasks.concat(newTask) });
       } else {
-        const newTask = await mergeAriaStatusToDownloadTask(status, task);
-        const msg = '任务下载失败';
-        const desc = `${newTask.fileName}\n${newTask.error || '未知原因'}`;
-        log().error('Task download failed', newTask);
-        antNotification.error({ message: msg, description: desc });
-        notification.sendNotification({ title: msg, body: desc });
+        const merged = await mergeAriaStatusToDownloadTask(status, task);
+        log().error('Download failed', merged);
+        antNotification.error({ message: '下载失败', description: merged.fileName });
+        notification.sendNotification({ title: '下载失败', body: merged.fileName });
       }
     } else {
-      const newTask = await mergeAriaStatusToDownloadTask(status, task);
-      updateDownloadTask(newTask, now);
+      updateDownloadTask(await mergeAriaStatusToDownloadTask(status, task), now);
     }
   },
-
   creationTasks: [],
   createCreationTask: (user, filter) => {
-    const id = crypto.randomUUID?.() ?? (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    const abortController = new AbortController();
-    creationTaskAbortControllerMap.set(id, abortController);
+    const id = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const ctrl = new AbortController();
+    creationTaskAbortControllerMap.set(id, ctrl);
+    log().info(`创建下载任务: ${user.screenName}, source=${filter.source}`);
     set({
-      creationTasks: [
-        ...get().creationTasks,
-        {
-          id,
-          user,
-          filter,
-          status: 'waiting' as const,
-          completeCount: 0,
-          skipCount: 0,
-        },
-      ],
+      creationTasks: [...get().creationTasks, { id, user, filter, status: 'waiting', completeCount: 0, skipCount: 0 }],
     });
   },
   removeCreationTask: (id) => {
     const ctrl = creationTaskAbortControllerMap.get(id);
-    if (ctrl) {
-      ctrl.abort();
-      creationTaskAbortControllerMap.delete(id);
-    }
-    set({ creationTasks: get().creationTasks.filter((v) => v.id !== id) });
+    if (ctrl) { ctrl.abort(); creationTaskAbortControllerMap.delete(id); }
+    set({ creationTasks: get().creationTasks.filter(v => v.id !== id) });
   },
   updateCreationTask: (task) => {
-    set({
-      creationTasks: get().creationTasks.map((old) =>
-        old.id === task.id ? task : old,
-      ),
-    });
+    set({ creationTasks: get().creationTasks.map(o => (o.id === task.id ? task : o)) });
   },
-
   batchProgress: null,
-  setBatchProgress: (progress) => set({ batchProgress: progress }),
+  setBatchProgress: (p) => set({ batchProgress: p }),
 }));
 
-// ==================== 核心下载流程 ====================
+// ================= 核心下载流程（带实时通知） =================
 const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
 const INITIAL_EMPTY_RETRY_DELAY = 2000;
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
-  log().info('========== 开始创建下载任务 ==========', {
-    user: task.user.screenName,
-    filter: task.filter,
-  });
   const { filter, user } = task;
-  const { batchCreateDownloadTask, updateCreationTask } =
-    useDownloadStore.getState();
+  const store = useDownloadStore.getState();
+  const { batchCreateDownloadTask, updateCreationTask } = store;
   const settings = useSettingsStore.getState();
+
+  // 强制刷新日志，确保开始日志写入文件
+  flushLog();
+
+  // 开始通知
+  antNotification.info({
+    message: `开始处理 ${user.screenName}`,
+    description: `源: ${filter.source === 'medias' ? '媒体' : '帖子'}`,
+    key: `start-${user.screenName}`,
+  });
 
   let completeCount = 0;
   let skipCount = 0;
   let now = dayjs();
   const since = filter.dateRange?.[0] || dayjs.unix(0);
   const until = filter.dateRange?.[1] || now.clone();
-  log().info(
-    `日期范围: ${since.format('YYYY-MM-DD')} ~ ${until.format('YYYY-MM-DD')}, 源: ${filter.source}`,
-  );
-
   let nextCursor: string | undefined | null = undefined;
   const getListFn = filter.source === 'medias' ? getUserMedias : getUserTweets;
-  const getMediaCounts = R.reduce(
-    (acc: number, p: TwitterPost) => acc + (p.medias?.length || 0),
-    0,
-  );
 
   let consecutiveSkippedPosts = 0;
   let retriedInitialEmpty = false;
+  let totalPosts = 0; // 本次任务总共获取到的帖子数（用于通知）
 
-  while (nextCursor !== null && now.isAfter(since)) {
-    if (abortSignal.aborted) {
-      log().info('任务被取消');
-      return;
-    }
+  try {
+    while (nextCursor !== null && now.isAfter(since)) {
+      if (abortSignal.aborted) break;
 
-    log().info(`发起API请求: userId=${user.id}, cursor=${nextCursor}`);
-    const { twitterPosts, cursor } = await getListFn(user.id, nextCursor);
-    if (abortSignal.aborted) break;
-    log().info(`获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
+      log().info(`API请求: ${user.id}, cursor: ${nextCursor}`);
+      const { twitterPosts, cursor } = await getListFn(user.id, nextCursor);
+      if (abortSignal.aborted) break;
+      totalPosts += twitterPosts.length;
 
-    // 首次获取为空的特殊重试
-    if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
-      log().warn(`首次API返回空，${INITIAL_EMPTY_RETRY_DELAY}ms后重试...`);
-      await delay(INITIAL_EMPTY_RETRY_DELAY);
-      retriedInitialEmpty = true;
-      const retry = await getListFn(user.id, undefined);
-      if (retry.twitterPosts.length === 0) {
-        log().error('重试后仍无帖子');
-        const errMsg = `用户 ${user.screenName} 无法获取帖子（API返回空列表）`;
-        antNotification.error({ message: '下载失败', description: errMsg });
-        throw new Error(errMsg);
+      // 首次空列表重试
+      if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
+        log().warn(`首次API返回空，${INITIAL_EMPTY_RETRY_DELAY}ms后重试`);
+        await delay(INITIAL_EMPTY_RETRY_DELAY);
+        retriedInitialEmpty = true;
+        const retry = await getListFn(user.id, undefined);
+        if (retry.twitterPosts.length === 0) {
+          const errMsg = `API 返回空列表，可能该用户的媒体源无数据，请尝试切换到“帖子”源`;
+          log().error(errMsg);
+          antNotification.error({ message: `下载中止: ${user.screenName}`, description: errMsg });
+          throw new Error(errMsg);
+        }
+        log().info('重试获得帖子，继续');
+        // 将重试结果赋值给当前变量，继续循环
+        nextCursor = retry.cursor;
+        now = R.last(retry.twitterPosts)?.createdAt || now;
+        // 直接跳过本次循环剩余部分，用重试结果重新进入循环
+        continue;
       }
-      log().info('重试成功，继续处理');
-      // 直接使用重试结果继续本轮循环
-      nextCursor = retry.cursor;
-      now = R.last(retry.twitterPosts)?.createdAt || now;
-      // 下面将重试结果赋值给 twitterPosts 和 cursor，跳过原来的赋值部分
-      // 为简化，直接 continue，让下一次循环重新获取
-      continue;
-    }
 
-    nextCursor = cursor;
-    now = R.last(twitterPosts)?.createdAt || now;
-    log().info(`当前最新帖子时间: ${now.format('YYYY-MM-DD HH:mm')}`);
+      nextCursor = cursor;
+      now = R.last(twitterPosts)?.createdAt || now;
 
-    // 过滤帖子
-    const filteredPosts = twitterPosts.filter(
-      R.allPass([
-        (p: TwitterPost) => (p.medias ? p.medias.length >= 0 : false),
-        (p: TwitterPost) =>
-          !p.createdAt ? true : until ? p.createdAt.isBefore(until) : true,
-        (p: TwitterPost) =>
-          !p.createdAt ? true : since ? p.createdAt.isAfter(since) : true,
-      ]),
-    );
+      // 过滤
+      const filteredPosts = twitterPosts.filter(p => {
+        if (!p.medias?.length) return false;
+        let dateOk = true;
+        if (p.createdAt) {
+          if (since && p.createdAt.isBefore(since)) dateOk = false;
+          if (until && p.createdAt.isAfter(until)) dateOk = false;
+        }
+        return dateOk;
+      }).filter(p => {
+        if (!filter.mediaTypes?.length) return true;
+        return p.medias!.some(m => filter.mediaTypes!.includes(m.type));
+      });
 
-    const skippedCountInBatch =
-      getMediaCounts(twitterPosts) - getMediaCounts(filteredPosts);
-    skipCount += skippedCountInBatch;
-    log().info(
-      `过滤后剩余 ${filteredPosts.length} 条帖子（跳过 ${skippedCountInBatch} 个媒体）`,
-    );
+      const skipped = twitterPosts.length - filteredPosts.length;
+      skipCount += skipped;
+      log().info(`帖子数: ${twitterPosts.length}, 过滤后: ${filteredPosts.length}`);
 
-    if (filteredPosts.length === 0) {
-      updateCreationTask({ ...task, completeCount, skipCount });
-      continue;
-    }
+      if (filteredPosts.length === 0) {
+        updateCreationTask({ ...task, completeCount, skipCount });
+        continue;
+      }
 
-    const paramsList: CreateDownloadTaskParams[] = [];
-
-    for (const post of filteredPosts) {
-      const filteredMedias = post.medias!.filter(
-        R.allPass([
-          (m: TwitterMedia) =>
-            filter.mediaTypes ? filter.mediaTypes.includes(m.type) : true,
-        ]),
-      );
-
-      log().info(`处理帖子 ${post.id}: 媒体数量 ${filteredMedias.length}`);
-
-      let allExistingSkipped = true;
-      let hasError = false;
-
-      for (const media of filteredMedias) {
-        try {
-          const dlTask = await prepareDownloadTask({ post, media });
-          const filePath = await path.join(dlTask.dir, dlTask.fileName);
-          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+      const paramsList: CreateDownloadTaskParams[] = [];
+      for (const post of filteredPosts) {
+        for (const media of post.medias!) {
+          if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
+          try {
+            const dlTask = await prepareDownloadTask({ post, media });
+            const fp = await path.join(dlTask.dir, dlTask.fileName);
+            if (settings.download.sameFileSkip && (await fs.exists(fp))) {
+              skipCount++;
+              log().info(`已存在: ${fp}`);
+              // 文件已存在，不计入连续跳过帖子的逻辑在下面
+            } else {
+              paramsList.push({ media, post });
+            }
+          } catch (e: any) {
+            log().error('prepare error', media, e);
             skipCount++;
-            log().info(`跳过已存在文件: ${filePath}`);
-          } else {
-            allExistingSkipped = false;
-            paramsList.push({ media, post });
           }
-        } catch (err: any) {
-          log().error(`准备下载失败: ${err.message}`, media);
-          skipCount++;
-          hasError = true;
-          allExistingSkipped = false;
         }
       }
 
-      if (allExistingSkipped && !hasError) {
+      // 连续跳过帖子检测
+      // （简化：仅当整个 batch 都没有新增下载时累加）
+      if (paramsList.length === 0) {
         consecutiveSkippedPosts++;
-        log().info(`连续跳过帖子 ${consecutiveSkippedPosts}`);
         if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
-          log().info(`连续跳过达到阈值，提前结束用户 ${user.screenName}`);
+          log().info(`连续${consecutiveSkippedPosts}批无新内容，提前结束`);
           updateCreationTask({ ...task, completeCount, skipCount });
-          return;
+          break;
         }
       } else {
         consecutiveSkippedPosts = 0;
       }
+
+      if (paramsList.length) {
+        await batchCreateDownloadTask(paramsList);
+        completeCount += paramsList.length;
+      }
+      updateCreationTask({ ...task, completeCount, skipCount });
     }
 
-    if (paramsList.length > 0) {
-      log().info(`批量创建 ${paramsList.length} 个下载任务`);
-      await batchCreateDownloadTask(paramsList);
-      completeCount += paramsList.length;
-    }
-
-    updateCreationTask({ ...task, completeCount, skipCount });
-
-    if (abortSignal.aborted) break;
+    flushLog();
+    const resultMsg = `下载了 ${completeCount} 个文件，跳过 ${skipCount} 个`;
+    log().info(`任务结束: ${user.screenName} ${resultMsg}`);
+    antNotification.success({
+      message: `${user.screenName} 处理完成`,
+      description: resultMsg + (totalPosts === 0 ? ' (未获取到任何帖子，请尝试切换下载源)' : ''),
+      key: `finish-${user.screenName}`,
+    });
+  } catch (err: any) {
+    log().error(`任务异常: ${user.screenName}`, err);
+    throw err;
   }
-
-  log().info(
-    `任务正常结束: 用户 ${user.screenName}, 下载 ${completeCount}, 跳过 ${skipCount}`,
-  );
 }
 
-// ==================== 任务调度 ====================
+// ================= 调度器（使用 setTimeout 提高响应） =================
 async function scheduleCreationTasks() {
-  const { creationTasks, removeCreationTask, updateCreationTask } =
-    useDownloadStore.getState();
+  const state = useDownloadStore.getState();
+  const { creationTasks, removeCreationTask, updateCreationTask } = state;
 
   if (R.isEmpty(creationTasks)) {
-    requestIdleCallback(scheduleCreationTasks);
+    setTimeout(scheduleCreationTasks, 300);
     return;
   }
 
-  const runningTask = creationTasks.find((t) => t.status === 'active');
-  if (runningTask) {
-    requestIdleCallback(scheduleCreationTasks);
+  if (creationTasks.some(t => t.status === 'active')) {
+    setTimeout(scheduleCreationTasks, 300);
     return;
   }
 
-  const nextTask = R.head(creationTasks) as CreationTask;
-  const abortController = creationTaskAbortControllerMap.get(nextTask.id);
-  if (abortController?.signal.aborted) {
+  const nextTask = creationTasks[0];
+  const ctrl = creationTaskAbortControllerMap.get(nextTask.id);
+  if (!ctrl || ctrl.signal.aborted) {
     removeCreationTask(nextTask.id);
-    requestIdleCallback(scheduleCreationTasks);
+    setTimeout(scheduleCreationTasks, 300);
     return;
   }
 
@@ -510,46 +409,38 @@ async function scheduleCreationTasks() {
   updateCreationTask(nextTask);
 
   try {
-    await runCreationTask(nextTask, abortController!.signal);
+    await runCreationTask(nextTask, ctrl.signal);
     removeCreationTask(nextTask.id);
   } catch (err: any) {
-    log().error('runCreationTask失败', err);
+    log().error(`任务最终失败: ${nextTask.id}`, err);
     removeCreationTask(nextTask.id);
-    const reason = typeof err === 'string' ? err : err?.message || '未知原因';
-    notification.sendNotification({ title: '爬虫任务运行失败', body: reason });
     antNotification.error({
-      message: '爬虫任务运行失败',
-      description: reason,
+      message: `任务失败: ${nextTask.user.screenName}`,
+      description: err.message || '未知错误',
     });
   }
 
-  requestIdleCallback(scheduleCreationTasks);
+  setTimeout(scheduleCreationTasks, 300);
 }
 
-scheduleCreationTasks();
+setTimeout(scheduleCreationTasks, 10);
 
-// ==================== 自动同步 ====================
-const INTERVAL = 500;
-async function scheduleAutoSyncTasks() {
-  const ids = useDownloadStore.getState().autoSyncTaskIds;
-  if (ids.length === 0) {
-    setTimeout(scheduleAutoSyncTasks, INTERVAL);
-    return;
+// ================= 自动同步 =================
+(async function autoSync() {
+  while (true) {
+    await delay(500);
+    const ids = useDownloadStore.getState().autoSyncTaskIds;
+    if (!ids.length) continue;
+    try {
+      const now = Date.now();
+      const resultMap = await aria2.tellStatus(ids);
+      const { downloadTasks, batchUpdateDownloadTasks } = useDownloadStore.getState();
+      const updated = await Promise.all(downloadTasks.map(async old => {
+        if (old.updatedAt > now) return old;
+        if (!resultMap[old.gid]) return old;
+        return mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
+      }));
+      batchUpdateDownloadTasks(updated);
+    } catch (e) { log().error('autoSync error', e); }
   }
-
-  const now = Date.now();
-  const resultMap = await aria2.tellStatus(ids);
-  const { downloadTasks, batchUpdateDownloadTasks } =
-    useDownloadStore.getState();
-  const newTasks = await Promise.all(
-    downloadTasks.map(async (old) => {
-      if (old.updatedAt > now) return old;
-      if (!resultMap[old.gid]) return old;
-      return mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
-    }),
-  );
-  batchUpdateDownloadTasks(newTasks);
-
-  setTimeout(scheduleAutoSyncTasks, INTERVAL);
-}
-scheduleAutoSyncTasks();
+})();
