@@ -88,6 +88,26 @@ export const About: React.FC = () => {
           </a>
         </li>
         <li>
+          <strong>改版作者：</strong>
+          <a
+            href="https://github.com/feiqingbiss"
+            target="_blank"
+            rel="noreferrer"
+          >
+            feiqingbiss
+          </a>
+        </li>
+        <li>
+          <strong>改版仓库：</strong>
+          <a
+            href="https://github.com/feiqingbiss/x-spider2"
+            target="_blank"
+            rel="noreferrer"
+          >
+            https://github.com/feiqingbiss/x-spider2
+          </a>
+        </li>
+        <li>
           <strong>开源协议：</strong>
           <a
             href="https://github.com/MiningCattiva/x-spider/blob/master/LICENSE"
