@@ -406,7 +406,7 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 }));
 
 const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
-const INITIAL_EMPTY_RETRY_DELAY = 2000; // 首次空结果重试延迟 2 秒
+const INITIAL_EMPTY_RETRY_DELAY = 2000;
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   log().info('Run creation task', task);
@@ -442,7 +442,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     const { twitterPosts, cursor } = await getListFn(user.id, nextCursor);
     if (abortSignal.aborted) break;
 
-    // 处理首次获取为空的情况，重试一次
+    // 处理首次获取为空的情况，尝试重试一次
     if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
       log().warn(`首次获取帖子列表为空，等待 ${INITIAL_EMPTY_RETRY_DELAY}ms 后重试`);
       await delay(INITIAL_EMPTY_RETRY_DELAY);
@@ -450,7 +450,13 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       const retryResult = await getListFn(user.id, undefined);
       if (abortSignal.aborted) break;
       if (retryResult.twitterPosts.length > 0) {
-        // 重试成功，使用重试结果处理
+        // 重试成功，使用重试结果继续
+        log().info('重试后获取到帖子');
+        // 将重试结果赋给当前变量继续处理
+        nextCursor = retryResult.cursor;
+        now = R.last(retryResult.twitterPosts)?.createdAt || now;
+        // 使用重试结果作为本次循环的处理数据
+        // 直接跳到下面的过滤和处理
         const retryFilteredPosts = retryResult.twitterPosts.filter(
           R.allPass([
             (post: TwitterPost) => (post.medias ? post.medias.length >= 0 : false),
@@ -465,13 +471,23 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           ]),
         );
 
-        const retryFilteredCount =
-          getMediaCounts(retryResult.twitterPosts) - getMediaCounts(retryFilteredPosts);
-        skipCount += retryFilteredCount;
-
-        if (retryFilteredPosts.length > 0) {
+        // ... 处理逻辑与下面正常流程相同，为避免重复，直接代入正常流程
+        // 将 twitterPosts 替换为重试结果，然后继续执行后面的统一处理
+        // 简单做法：将 retryResult 赋值给 twitterPosts，并让 cursor 正确，然后跳过本次循环的剩余部分，重新进入 while 头部时会用新的 cursor
+        // 但这样会浪费一次循环，但安全。我们直接重新赋值并 continue
+        nextCursor = retryResult.cursor;
+        now = R.last(retryResult.twitterPosts)?.createdAt || now;
+        // 注意：我们没有修改原来的 twitterPosts，而是直接 continue，然后下一次循环会重新获取，这样不太好，会多一次请求。
+        // 更好的做法：直接在此处处理 retryResult，并更新 cursor 和 now，然后 continue 进入下一次循环。
+        // 这里我们直接处理 retryResult，并 set nextCursor 和 now，然后 continue
+        // 处理 retryResult 的代码与下面完全相同，为了简洁，我们提取一个处理函数 handlePosts
+        // 但这里直接写一遍
+        const filteredPosts = retryFilteredPosts; // 上面已经过滤了
+        const filteredCount = getMediaCounts(retryResult.twitterPosts) - getMediaCounts(filteredPosts);
+        skipCount += filteredCount;
+        if (filteredPosts.length > 0) {
           const paramsList: CreateDownloadTaskParams[] = [];
-          for (const post of retryFilteredPosts) {
+          for (const post of filteredPosts) {
             const filteredMedias = post.medias!.filter(
               R.allPass([
                 (media: TwitterMedia) => {
@@ -522,16 +538,17 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         } else {
           updateCreationTask({ ...task, completeCount, skipCount });
         }
-
-        nextCursor = retryResult.cursor;
-        now = R.last(retryResult.twitterPosts)?.createdAt || now;
-        if (abortSignal.aborted) break;
-        continue; // 进入下一次循环以处理后续分页
+        // 继续下一次循环
+        continue;
       } else {
-        // 重试后仍为空，结束任务
-        log().info('重试后仍无帖子，任务结束');
-        updateCreationTask({ ...task, completeCount, skipCount });
-        return;
+        // 重试后仍为空，抛出具体错误，不再静默结束
+        const errMsg = `用户 ${user.screenName} 无法获取任何帖子（重试后仍为空）`;
+        log().error(errMsg);
+        antNotification.error({
+          message: '下载任务异常',
+          description: errMsg,
+        });
+        throw new Error(errMsg);
       }
     }
 

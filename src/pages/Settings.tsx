@@ -17,7 +17,6 @@ export const Settings: React.FC = () => {
 
   const exportDebugReport = async () => {
     try {
-      // 收集基本状态
       const downloadState = useDownloadStore.getState();
       const stats = {
         downloadTasks: downloadState.downloadTasks.length,
@@ -25,30 +24,29 @@ export const Settings: React.FC = () => {
         batchProgress: downloadState.batchProgress,
       };
 
-      // 获取日志目录并读取最新日志文件
       const logDir = await path.appLogDir();
-      let logContent = '';
-      if (await fs.exists(logDir)) {
-        const entries = await fs.readDir(logDir);
-        const logFiles = entries
-          .filter((e) => e.name?.endsWith('.log'))
-          .sort((a, b) => (b.name || '').localeCompare(a.name || ''));
-
-        if (logFiles.length > 0) {
-          const latestLogPath = await path.join(logDir, logFiles[0].name!);
-          try {
-            logContent = await fs.readTextFile(latestLogPath);
-          } catch (e) {
-            logContent = '[无法读取日志文件]';
-          }
-        } else {
-          logContent = '[无日志文件]';
-        }
-      } else {
-        logContent = '[日志目录不存在]';
+      // 确保日志目录存在
+      if (!(await fs.exists(logDir))) {
+        await fs.createDir(logDir, { recursive: true });
       }
 
-      // 生成报告
+      let logContent = '';
+      const entries = await fs.readDir(logDir);
+      const logFiles = entries
+        .filter((e) => e.name?.endsWith('.log'))
+        .sort((a, b) => (b.name || '').localeCompare(a.name || ''));
+
+      if (logFiles.length > 0) {
+        const latestLogPath = await path.join(logDir, logFiles[0].name!);
+        try {
+          logContent = await fs.readTextFile(latestLogPath);
+        } catch (e) {
+          logContent = '[无法读取日志文件]';
+        }
+      } else {
+        logContent = '[无日志文件]';
+      }
+
       const report = [
         `=== X-Spider 调试报告 ===`,
         `生成时间: ${new Date().toISOString()}`,
@@ -61,16 +59,14 @@ export const Settings: React.FC = () => {
         `批量进度: ${stats.batchProgress ? JSON.stringify(stats.batchProgress) : '无'}`,
         ``,
         `--- 应用日志 (最近部分) ---`,
-        logContent.slice(-200000), // 限制 200KB 防止过大
+        logContent.slice(-200000),
       ].join('\n');
 
-      // 写入到下载目录
       const downloadDir = await path.downloadDir();
       const reportPath = await path.join(downloadDir, 'x-spider-debug-report.txt');
       await fs.writeTextFile(reportPath, report);
       
       message.success(`报告已保存到 ${reportPath}`);
-      // 打开所在文件夹
       await shell.open(downloadDir);
     } catch (err: any) {
       message.error(`导出失败: ${err?.message || '未知错误'}`);

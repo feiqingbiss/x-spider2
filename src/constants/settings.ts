@@ -16,7 +16,7 @@ export const DEFAULT_SETTINGS: Settings = {
   app: {
     autoCheckUpdate: true,
     acceptPrerelease: false,
-    writeLogs: false,
+    writeLogs: true, // 改为 true，确保日志写入文件
   },
 };
 
