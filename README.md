@@ -1,6 +1,10 @@
 
 一个推特媒体（图片、视频）下载器。
 
+原作者：MiningCattiva
+
+由deepseek改版并添加额外功能，如批量下载以及改正SSL TLS相关下载问题。
+
 ## 下载
 
 [Releases](https://github.com/feiqingbiss/x-spider2/releases)
