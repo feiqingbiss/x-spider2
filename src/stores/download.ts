@@ -431,7 +431,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   }, 0);
 
   let consecutiveSkippedPosts = 0;
-  let retriedInitialEmpty = false; // 标记是否已对首次空结果进行了重试
+  let retriedInitialEmpty = false;
 
   while (nextCursor !== null && now.isAfter(since)) {
     if (abortSignal.aborted) {
@@ -442,40 +442,23 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     const { twitterPosts, cursor } = await getListFn(user.id, nextCursor);
     if (abortSignal.aborted) break;
 
-    // 处理首次获取为空的情况，可能是临时问题，尝试重试一次
+    // 处理首次获取为空的情况，重试一次
     if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
-      log().warn('首次获取帖子列表为空，等待 ${INITIAL_EMPTY_RETRY_DELAY}ms 后重试');
+      log().warn(`首次获取帖子列表为空，等待 ${INITIAL_EMPTY_RETRY_DELAY}ms 后重试`);
       await delay(INITIAL_EMPTY_RETRY_DELAY);
       retriedInitialEmpty = true;
-      // 重新获取，使用相同的 cursor（初始为 undefined）
       const retryResult = await getListFn(user.id, undefined);
       if (abortSignal.aborted) break;
-      // 使用重试后的结果继续
       if (retryResult.twitterPosts.length > 0) {
-        // 重试成功，使用新结果
-        nextCursor = retryResult.cursor;
-        now = R.last(retryResult.twitterPosts)?.createdAt || now;
-        log().info('重试后获取到帖子，继续');
-        // 直接处理重试后的帖子
-        const filteredPosts = retryResult.twitterPosts.filter(/* ... */);
-        // 为了代码简洁，重新组织流程：我们将重试后的帖子插入到循环开始处理
-        // 这里将重试结果赋值给 local 变量，然后跳过原本的 cursor 更新，直接处理
-        // 下面的代码会基于新的 twitterPosts 和 cursor
-        // 我们用 continue 跳出当前迭代，然后重新进入循环头部处理
-        // 但是 while 条件会检查 nextCursor，现在 nextCursor 还是 undefined，会继续循环
-        // 所以我们可以直接修改 nextCursor 和 twitterPosts 变量并进入处理逻辑
-        // 简便方式：将重试结果包装一下，然后 continue 让循环重新获取
-        // 但我们已经调用了 getListFn，不想再调一次，所以直接在这里处理：
-        // 下面将处理逻辑抽取为局部函数或重复代码
-        // 为了保持代码简单，我们直接在重试分支中处理 retryResult
+        // 重试成功，使用重试结果处理
         const retryFilteredPosts = retryResult.twitterPosts.filter(
           R.allPass([
-            (post) => (post.medias ? post.medias.length >= 0 : false),
-            (post) => {
+            (post: TwitterPost) => (post.medias ? post.medias.length >= 0 : false),
+            (post: TwitterPost) => {
               if (!post.createdAt) return true;
               return until ? post.createdAt.isBefore(until) : true;
             },
-            (post) => {
+            (post: TwitterPost) => {
               if (!post.createdAt) return true;
               return since ? post.createdAt.isAfter(since) : true;
             },
@@ -491,7 +474,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           for (const post of retryFilteredPosts) {
             const filteredMedias = post.medias!.filter(
               R.allPass([
-                (media) => {
+                (media: TwitterMedia) => {
                   if (!filter.mediaTypes) return false;
                   return filter.mediaTypes.includes(media.type);
                 },
@@ -540,31 +523,30 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           updateCreationTask({ ...task, completeCount, skipCount });
         }
 
-        // 更新 nextCursor 为 retryResult.cursor
         nextCursor = retryResult.cursor;
         now = R.last(retryResult.twitterPosts)?.createdAt || now;
         if (abortSignal.aborted) break;
-        continue; // 进入下一次循环
+        continue; // 进入下一次循环以处理后续分页
       } else {
-        // 重试后仍为空，正常退出任务
+        // 重试后仍为空，结束任务
         log().info('重试后仍无帖子，任务结束');
         updateCreationTask({ ...task, completeCount, skipCount });
         return;
       }
     }
 
-    // 正常的后续处理
+    // 正常流程
     nextCursor = cursor;
     now = R.last(twitterPosts)?.createdAt || now;
     log().info('Now', now.format('YYYY-MM-DD'), 'next cursor', nextCursor);
     const filteredPosts = twitterPosts.filter(
       R.allPass([
-        (post) => (post.medias ? post.medias.length >= 0 : false),
-        (post) => {
+        (post: TwitterPost) => (post.medias ? post.medias.length >= 0 : false),
+        (post: TwitterPost) => {
           if (!post.createdAt) return true;
           return until ? post.createdAt.isBefore(until) : true;
         },
-        (post) => {
+        (post: TwitterPost) => {
           if (!post.createdAt) return true;
           return since ? post.createdAt.isAfter(since) : true;
         },
@@ -590,7 +572,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
     for (const post of filteredPosts) {
       const filteredMedias = post.medias!.filter(
         R.allPass([
-          (media) => {
+          (media: TwitterMedia) => {
             if (!filter.mediaTypes) return false;
             return filter.mediaTypes.includes(media.type);
           },
