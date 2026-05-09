@@ -127,7 +127,6 @@ export interface DownloadStore {
   removeCreationTask: (id: string) => void;
   updateCreationTask: (task: CreationTask) => void;
 
-  // 批量下载进度（全局状态，跨页面保留）
   batchProgress: BatchProgress | null;
   setBatchProgress: (progress: BatchProgress | null) => void;
 }
@@ -197,8 +196,12 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const tasks: DownloadTask[] = [];
 
     for (const params of paramsList) {
-      const task = await prepareDownloadTask(params);
-      tasks.push(task);
+      try {
+        const task = await prepareDownloadTask(params);
+        tasks.push(task);
+      } catch (err: any) {
+        log().error('准备下载任务失败，跳过该媒体', params.media, err);
+      }
     }
 
     if (tasks.length === 0) {
@@ -479,30 +482,42 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       );
 
       log().info('FilteredMedias', filteredMedias);
-      let allMediaSkippedForPost = true;
+      let allExistingSkipped = true; // 假设所有媒体都是因为文件已存在而跳过
+      let hasAnyError = false;
+
       for (const media of filteredMedias) {
-        const downloadTask = await prepareDownloadTask({ post, media });
-        log().info('Prepared download task', downloadTask);
-        const filePath = await path.join(downloadTask.dir, downloadTask.fileName);
-        log().info('Resolved file path', filePath);
-        if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+        try {
+          const downloadTask = await prepareDownloadTask({ post, media });
+          const filePath = await path.join(downloadTask.dir, downloadTask.fileName);
+          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+            skipCount++;
+            log().info('Skip because sameFileSkip', media);
+            // 文件已存在跳过，不影响 allExistingSkipped，保持 true 直到有非跳过
+          } else {
+            // 文件不存在，准备下载
+            allExistingSkipped = false;
+            paramsList.push({
+              media,
+              post,
+            });
+          }
+        } catch (err: any) {
+          // 准备任务失败（例如获取下载链接失败），跳过该媒体
+          log().error('准备下载任务失败，跳过媒体', media, err);
           skipCount++;
-          log().info('Skip because sameFileSkip', media);
-        } else {
-          allMediaSkippedForPost = false;
-          paramsList.push({
-            media,
-            post,
-          });
+          hasAnyError = true;
+          // 该媒体因错误跳过，不算在文件已存在跳过，所以 allExistingSkipped 应设为 false（因为不是全部由文件已存在导致）
+          allExistingSkipped = false;
         }
       }
 
-      if (allMediaSkippedForPost) {
+      if (allExistingSkipped && !hasAnyError) {
+        // 所有媒体都因文件已存在而被跳过
         consecutiveSkippedPosts++;
-        log().info(`帖子完全跳过，连续跳过帖子数: ${consecutiveSkippedPosts}`);
+        log().info(`帖子完全跳过（文件已存在），连续跳过帖子数: ${consecutiveSkippedPosts}`);
         if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
           log().info(
-            `连续 ${consecutiveSkippedPosts} 个帖子完全跳过，提前结束用户 ${user.screenName} 的任务`,
+            `连续 ${consecutiveSkippedPosts} 个帖子文件已存在，提前结束用户 ${user.screenName} 的任务`,
           );
           updateCreationTask({
             ...task,
@@ -512,28 +527,28 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
           return;
         }
       } else {
+        // 有媒体需要下载，或出现了错误，重置连续跳过计数
         consecutiveSkippedPosts = 0;
       }
     }
 
     log().info('Params', paramsList);
 
-    if (paramsList.length === 0) {
+    if (paramsList.length > 0) {
+      await batchCreateDownloadTask(paramsList);
+      completeCount += paramsList.length;
       updateCreationTask({
         ...task,
         completeCount,
         skipCount,
       });
-      continue;
+    } else {
+      updateCreationTask({
+        ...task,
+        completeCount,
+        skipCount,
+      });
     }
-
-    await batchCreateDownloadTask(paramsList);
-    completeCount += paramsList.length;
-    updateCreationTask({
-      ...task,
-      completeCount,
-      skipCount,
-    });
 
     if (abortSignal.aborted) break;
   }
