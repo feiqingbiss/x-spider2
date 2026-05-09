@@ -4,6 +4,7 @@ export default {
   theme: {
     extend: {
       colors: {
+        primary: '#1d9bf0',
         'ant-blue': 'var(--ant-blue)',
         'ant-purple': 'var(--ant-purple)',
         'ant-cyan': 'var(--ant-cyan)',
@@ -222,6 +223,21 @@ export default {
         'ant-color-link-active': 'var(--ant-color-link-active)',
         'ant-color-bg-mask': 'var(--ant-color-bg-mask)',
         'ant-color-white': 'var(--ant-color-white)',
+      },
+      keyframes: {
+        'fade-in-up': {
+          '0%': {
+            opacity: '0',
+            transform: 'translateY(8px)',
+          },
+          '100%': {
+            opacity: '1',
+            transform: 'translateY(0)',
+          },
+        },
+      },
+      animation: {
+        'fade-in-up': 'fade-in-up 0.25s ease-out',
       },
     },
   },

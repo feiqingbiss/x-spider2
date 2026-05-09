@@ -30,7 +30,7 @@ const AppInternal: React.FC = () => {
     <div className="bg-gray-50 w-full h-full overflow-auto">
       <SideBar />
       <main
-        className="w-full overflow-auto transition-all pl-52"
+        className="w-full overflow-auto transition-all pl-52 animate-fade-in-up"
         key={currentRoute?.id}
         aria-label={currentRoute?.name}
       >

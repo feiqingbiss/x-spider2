@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { DownloadList } from './DownloadList';
 import * as R from 'ramda';
 import { useDownloadStore } from '../../stores/download';
@@ -14,6 +14,13 @@ export const TabDownloading: React.FC = () => {
     },
     [setAutoSyncIds],
   );
+
+  // 组件卸载时清空同步列表，停止后台同步
+  useEffect(() => {
+    return () => {
+      setAutoSyncIds([]);
+    };
+  }, [setAutoSyncIds]);
 
   return (
     <DownloadList

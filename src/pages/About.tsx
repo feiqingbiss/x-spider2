@@ -6,7 +6,6 @@ import { useCheckUpdate } from '../hooks/useCheckUpdate';
 import { useAppStateStore } from '../stores/app-state';
 import { isVersionGt } from '../utils/version';
 import { dialog } from '@tauri-apps/api';
-import { Sponsors } from '../components/about/Sponsors';
 
 export const About: React.FC = () => {
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -97,20 +96,6 @@ export const About: React.FC = () => {
           >
             {PACKAGE_JSON_LICENSE}
           </a>
-        </li>
-        <li>
-          <strong>赞助：</strong>
-          <a
-            href="https://afdian.net/a/moyuscript"
-            target="_blank"
-            rel="noreferrer"
-          >
-            爱发电
-          </a>
-        </li>
-        <li>
-          <strong>赞助名单：</strong>
-          <Sponsors />
         </li>
       </ul>
     </>

@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import clsx from 'clsx';
-import React from 'react';
+import React, { useCallback } from 'react';
 import { ROUTES } from '../constants/routes';
 import { Route } from '../interfaces/Route';
 import { useRouteStore } from '../stores/route';
@@ -9,33 +9,44 @@ import { Account } from './Account';
 interface SideBarItemProps {
   route: Route;
   active: boolean;
+  onNavigate: (route: Route) => void;
 }
 
-const Item: React.FC<SideBarItemProps> = ({ route, active }) => {
-  const setRoute = useRouteStore((state) => state.setRoute);
+const Item: React.FC<SideBarItemProps> = React.memo(({ route, active, onNavigate }) => {
+  const handleClick = useCallback(() => {
+    onNavigate(route);
+  }, [route, onNavigate]);
+
   return (
     <li className="text-ant-color-white pr-2">
       <button
-        aria-label={`切换到${route.name}${active ? '（当前）' : ''}`}
         className={clsx(
           'block w-full py-3 px-4 rounded-r-md transition-all',
           active
             ? 'bg-ant-color-white text-ant-color-primary'
-            : 'bg-transparent hover:bg-[rgba(255,255,255,0.2)] ',
+            : 'bg-transparent hover:bg-[rgba(255,255,255,0.2)]',
         )}
-        onClick={() => {
-          setRoute(route);
-        }}
+        onClick={handleClick}
       >
         <span className="float-left">{route.icon}</span>
         <span>{route.name}</span>
       </button>
     </li>
   );
-};
+});
+Item.displayName = 'SideBarItem';
 
 export const SideBar: React.FC = () => {
   const current = useRouteStore((state) => state.route);
+  const setRoute = useRouteStore((state) => state.setRoute);
+
+  const handleNavigate = useCallback(
+    (route: Route) => {
+      if (current?.id === route.id) return;
+      setRoute(route);
+    },
+    [current, setRoute],
+  );
 
   if (!current) return null;
 
@@ -52,6 +63,7 @@ export const SideBar: React.FC = () => {
               key={route.id}
               route={route}
               active={current.id === route.id}
+              onNavigate={handleNavigate}
             />
           ))}
         </ul>
