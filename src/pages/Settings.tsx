@@ -24,29 +24,40 @@ export const Settings: React.FC = () => {
         batchProgress: downloadState.batchProgress,
       };
 
-      const logDir = await path.appLogDir();
-      if (!(await fs.exists(logDir))) {
-        await fs.createDir(logDir, { recursive: true });
+      // 下载日志文件路径
+      const dataDir = await path.appDataDir();
+      const dlLogPath = await path.join(dataDir, 'logs', 'debug-dl.log');
+      let dlLogContent = '';
+      try {
+        if (await fs.exists(dlLogPath)) {
+          dlLogContent = await fs.readTextFile(dlLogPath);
+        } else {
+          dlLogContent = '[debug-dl.log 文件不存在]';
+        }
+      } catch (e) {
+        dlLogContent = `[读取 debug-dl.log 失败: ${e}]`;
       }
 
-      // 给日志缓冲区一点时间写入磁盘（Logger 有 500ms 延迟）
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      let logContent = '';
-      const entries = await fs.readDir(logDir);
-      const logFiles = entries
-        .filter((e) => e.name?.endsWith('.log'))
-        .sort((a, b) => (b.name || '').localeCompare(a.name || ''));
-
-      if (logFiles.length > 0) {
-        const latestLogPath = await path.join(logDir, logFiles[0].name!);
-        try {
-          logContent = await fs.readTextFile(latestLogPath);
-        } catch (e) {
-          logContent = '[无法读取日志文件]';
+      // 兼容旧应用日志目录
+      const logDir = await path.appLogDir();
+      let appLogContent = '';
+      if (await fs.exists(logDir)) {
+        const entries = await fs.readDir(logDir);
+        const logFiles = entries
+          .filter((e) => e.name?.endsWith('.log'))
+          .sort((a, b) => (b.name || '').localeCompare(a.name || ''));
+        if (logFiles.length > 0) {
+          const latestLogPath = await path.join(logDir, logFiles[0].name!);
+          try {
+            appLogContent = await fs.readTextFile(latestLogPath);
+          } catch (e) {
+            appLogContent = '[无法读取应用日志]';
+          }
+        } else {
+          appLogContent = '[无应用日志]';
         }
       } else {
-        logContent = '[无日志文件]';
+        appLogContent = '[应用日志目录不存在]';
       }
 
       const report = [
@@ -60,8 +71,11 @@ export const Settings: React.FC = () => {
         `创建任务: ${stats.creationTasks}`,
         `批量进度: ${stats.batchProgress ? JSON.stringify(stats.batchProgress) : '无'}`,
         ``,
+        `--- 下载调试日志 (debug-dl.log) ---`,
+        dlLogContent.slice(-500000),
+        ``,
         `--- 应用日志 (最近部分) ---`,
-        logContent.slice(-200000),
+        appLogContent.slice(-200000),
       ].join('\n');
 
       const downloadDir = await path.downloadDir();
