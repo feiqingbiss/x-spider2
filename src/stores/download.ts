@@ -17,7 +17,7 @@ import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { delay } from '../utils';
 
-// ================= 强日志系统（直接写文件） =================
+// 日志系统（写入 Roaming 日志文件）
 let debugLogFilePath: string | null = null;
 
 async function ensureDebugLogPath(): Promise<string> {
@@ -37,17 +37,13 @@ async function writeDebugLog(message: string) {
     const timestamp = new Date().toISOString();
     const line = `${timestamp} ${message}\n`;
     await fs.writeTextFile(filePath, line, { append: true });
-  } catch (e) {
-    // 静默失败，避免循环
-  }
+  } catch (e) { /* 静默 */ }
 }
 
 function logFn(level: string, ...args: any[]) {
   const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
   const fullMsg = `[DL] [${level.toUpperCase()}] ${msg}`;
-  // 写入文件
   writeDebugLog(fullMsg);
-  // 同时输出到原始 log（如果可用）
   try {
     if (window.log && window.log.category) {
       const logger = window.log.category('DL');
@@ -268,6 +264,7 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 // ================= 核心下载流程 =================
 const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
 const INITIAL_EMPTY_RETRY_DELAY = 2000;
+const MAX_ACTIVE_CREATION_TASKS = 3; // 同时进行的爬虫任务最大数量
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   const { filter, user } = task;
@@ -399,37 +396,53 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   }
 }
 
+// ================= 并发限制调度器 =================
 async function scheduleCreationTasks() {
   const state = useDownloadStore.getState();
   const { creationTasks, removeCreationTask, updateCreationTask } = state;
 
+  // 统计当前处于 active 状态的任务数
+  const activeCount = creationTasks.filter(t => t.status === 'active').length;
+
+  if (activeCount >= MAX_ACTIVE_CREATION_TASKS) {
+    // 达到并发上限，等待下次调度
+    setTimeout(scheduleCreationTasks, 1000);
+    return;
+  }
+
   if (R.isEmpty(creationTasks)) {
-    setTimeout(scheduleCreationTasks, 300);
+    setTimeout(scheduleCreationTasks, 1000);
     return;
   }
-  if (creationTasks.some(t => t.status === 'active')) {
-    setTimeout(scheduleCreationTasks, 300);
+
+  // 取出下一个 waiting 状态的任务
+  const nextTask = creationTasks.find(t => t.status === 'waiting');
+  if (!nextTask) {
+    setTimeout(scheduleCreationTasks, 1000);
     return;
   }
-  const nextTask = creationTasks[0];
+
   const ctrl = creationTaskAbortControllerMap.get(nextTask.id);
   if (!ctrl || ctrl.signal.aborted) {
     removeCreationTask(nextTask.id);
-    setTimeout(scheduleCreationTasks, 300);
+    setTimeout(scheduleCreationTasks, 500);
     return;
   }
+
   nextTask.status = 'active';
   updateCreationTask(nextTask);
+
   try {
     await runCreationTask(nextTask, ctrl.signal);
-    logFn('info', `任务完成，移除: ${nextTask.id}`);
     removeCreationTask(nextTask.id);
   } catch (err: any) {
     logFn('error', `任务失败: ${nextTask.id}, ${err.message}`);
     removeCreationTask(nextTask.id);
     antNotification.error({ message: '任务失败', description: err.message });
   }
-  setTimeout(scheduleCreationTasks, 300);
+
+  // 立即进行下一次调度，处理下一个 waiting 任务
+  setTimeout(scheduleCreationTasks, 100);
 }
 
 setTimeout(scheduleCreationTasks, 10);
