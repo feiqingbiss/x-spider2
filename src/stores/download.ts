@@ -17,8 +17,8 @@ import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { delay } from '../utils';
 
-// ================= 日志系统（自动限制 300KB） =================
-const MAX_LOG_FILE_SIZE = 300 * 1024; // 300 KB
+// ================= 日志系统（自动限制大小） =================
+const MAX_LOG_FILE_SIZE = 300 * 1024; // 300KB
 let debugLogFilePath: string | null = null;
 
 async function ensureDebugLogPath(): Promise<string> {
@@ -38,12 +38,11 @@ async function writeDebugLog(message: string) {
     const timestamp = new Date().toISOString();
     const line = `${timestamp} ${message}\n`;
 
-    // 如果文件超过限制，截断保留最新的 150KB（避免频繁重写）
     if (await fs.exists(filePath)) {
       const stat = await fs.readTextFile(filePath).then(c => c.length).catch(() => 0);
       if (stat > MAX_LOG_FILE_SIZE) {
         const oldContent = await fs.readTextFile(filePath);
-        const keepSize = Math.floor(MAX_LOG_FILE_SIZE / 2); // 保留一半
+        const keepSize = Math.floor(MAX_LOG_FILE_SIZE / 2);
         const trimmed = oldContent.slice(-keepSize);
         await fs.writeTextFile(filePath, trimmed);
       }
@@ -57,7 +56,8 @@ async function writeDebugLog(message: string) {
 
 function logFn(level: string, ...args: any[]) {
   const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
-  writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
+  const fullMsg = `[DL] [${level.toUpperCase()}] ${msg}`;
+  writeDebugLog(fullMsg);
   try {
     if (window.log?.category) {
       const l = window.log.category('DL');
@@ -68,7 +68,15 @@ function logFn(level: string, ...args: any[]) {
   } catch (_) {}
 }
 
-// ================= 类型与辅助函数 =================
+// ================= 工具函数 =================
+// 安全提取错误信息
+function getErrorMessage(err: any): string {
+  if (typeof err === 'string') return err;
+  if (err?.message) return err.message;
+  if (err?.toString) return err.toString();
+  return '未知错误';
+}
+
 export interface CreateDownloadTaskParams { post: TwitterPost; media: TwitterMedia; }
 export interface BatchProgress { total: number; completed: number; currentUser: string; }
 
@@ -198,12 +206,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   setBatchProgress: (p) => set({ batchProgress: p }),
 }));
 
-// ================= 核心下载流程（含请求间隔和并发控制） =================
-const CONSECUTIVE_POSTS_SKIP_THRESHOLD = 10;
-const INITIAL_EMPTY_RETRY_DELAY = 2000;
-const MAX_ACTIVE_TASKS = 1;                   // 同时只能运行 1 个用户任务
-const MIN_API_INTERVAL_MS = 3000;             // 每次 API 请求最少间隔 3 秒
-const MAX_ADDITIONAL_DELAY_MS = 7000;         // 额外最多随机 7 秒，总间隔 3~10 秒
+// ================= 并发与速率控制 =================
+const MAX_ACTIVE_TASKS = 1; // 同时只有 1 个用户任务
+const MIN_API_INTERVAL_MS = 5000; // API 最小间隔 5 秒
+const MAX_ADDITIONAL_DELAY_MS = 10000; // 额外随机最多 10 秒
 
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   const { filter, user } = task;
@@ -229,14 +235,28 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       await delay(delayMs);
 
       logFn('info', `--- API 请求: userId=${user.id}, cursor=${nextCursor} ---`);
-      const resp = await getListFn(user.id, nextCursor);
+      let resp;
+      try {
+        resp = await getListFn(user.id, nextCursor);
+      } catch (apiErr: any) {
+        const errMsg = getErrorMessage(apiErr);
+        logFn('error', `API请求失败: ${errMsg}`);
+        // 如果是解码错误，大概率是限流，等待更长时间后重试
+        if (errMsg.includes('expected value at line 1 column 1')) {
+          logFn('warn', `检测到可能的 API 限流，等待 30 秒后重试...`);
+          antNotification.warning({ message: '检测到 API 限流', description: `任务 ${user.screenName} 将在 30 秒后重试` });
+          await delay(30000);
+          continue; // 重试当前请求
+        }
+        throw apiErr; // 其他错误抛出
+      }
       if (abortSignal.aborted) break;
       const { twitterPosts, cursor } = resp;
       logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
 
       if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
         logFn('warn', '首次获取为空，重试');
-        await delay(INITIAL_EMPTY_RETRY_DELAY);
+        await delay(5000);
         retriedInitialEmpty = true;
         const retry = await getListFn(user.id, undefined);
         if (retry.twitterPosts.length === 0) {
@@ -284,7 +304,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         }
         if (!postAdded) {
           consecutiveSkippedPosts++;
-          if (consecutiveSkippedPosts >= CONSECUTIVE_POSTS_SKIP_THRESHOLD) {
+          if (consecutiveSkippedPosts >= 10) {
             logFn('info', '连续跳过帖子达到阈值，提前结束');
             store.updateCreationTask({ ...task, completeCount, skipCount });
             return;
@@ -307,7 +327,8 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
       description: `下载 ${completeCount}, 跳过 ${skipCount}`,
     });
   } catch (err: any) {
-    logFn('error', `用户 ${user.screenName} 异常: ${err?.message || err}`);
+    const errMsg = getErrorMessage(err);
+    logFn('error', `用户 ${user.screenName} 异常: ${errMsg}`);
     throw err;
   }
 }
@@ -336,12 +357,13 @@ async function scheduleCreationTasks() {
   try {
     await runCreationTask(nextTask, ctrl.signal);
   } catch (err: any) {
-    logFn('error', `任务最终失败: ${err.message}`);
-    antNotification.error({ message: '任务失败', description: err.message });
+    const errMsg = getErrorMessage(err);
+    logFn('error', `任务最终失败: ${errMsg}`);
+    antNotification.error({ message: '任务失败', description: errMsg });
   } finally {
     state.removeCreationTask(nextTask.id);
   }
-  setTimeout(scheduleCreationTasks, 500);
+  setTimeout(scheduleCreationTasks, 1000);
 }
 setTimeout(scheduleCreationTasks, 10);
 
@@ -360,6 +382,6 @@ setTimeout(scheduleCreationTasks, 10);
         return mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
       }));
       batchUpdateDownloadTasks(updated);
-    } catch (e) { logFn('error', 'autoSync error', e); }
+    } catch (e) { logFn('error', 'sync error', e); }
   }
 })();
