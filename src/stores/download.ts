@@ -365,7 +365,7 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   let currentSource: 'medias' | 'tweets' = task.filter.source;
   let triedSwitching = false;
 
-  const executeWithSource = async (source: 'medias' | 'tweets') => {
+  const executeWithSource: (source: 'medias' | 'tweets') => Promise<void> = async (source) => {
     const { filter, user } = task;
     const store = useDownloadStore.getState();
     const settings = useSettingsStore.getState();
