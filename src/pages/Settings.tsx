@@ -24,18 +24,19 @@ export const Settings: React.FC = () => {
         batchProgress: downloadState.batchProgress,
       };
 
-      // 读取 debug-dl.log (最多 300KB)
+      // 读取 debug-dl.log（已限制为150KB）
       const dataDir = await path.appDataDir();
       const dlLogPath = await path.join(dataDir, 'logs', 'debug-dl.log');
       let dlLog = '';
       if (await fs.exists(dlLogPath)) {
         const full = await fs.readTextFile(dlLogPath);
-        dlLog = full.length > 300 * 1024 ? full.slice(-300 * 1024) : full;
+        // 再截断一次确保不超过100KB
+        dlLog = full.length > 100 * 1024 ? full.slice(-100 * 1024) : full;
       } else {
         dlLog = '[debug-dl.log 不存在]';
       }
 
-      // 可选：读取应用日志
+      // 可选：读取应用日志（最新1个文件，截取50KB）
       const logDir = await path.appLogDir();
       let appLog = '';
       if (await fs.exists(logDir)) {
@@ -47,7 +48,7 @@ export const Settings: React.FC = () => {
           const latestLog = await path.join(logDir, logFiles[0].name!);
           try {
             const fullAppLog = await fs.readTextFile(latestLog);
-            appLog = fullAppLog.slice(-100 * 1024); // 限制 100KB
+            appLog = fullAppLog.slice(-50 * 1024);
           } catch { appLog = '[无法读取]'; }
         }
       }
@@ -63,10 +64,10 @@ export const Settings: React.FC = () => {
         `创建任务: ${stats.creationTasks}`,
         `批量进度: ${stats.batchProgress ? JSON.stringify(stats.batchProgress) : '无'}`,
         ``,
-        `--- 下载调试日志 (debug-dl.log，最后 300KB) ---`,
+        `--- 下载调试日志 (debug-dl.log，最后100KB) ---`,
         dlLog,
         ``,
-        `--- 应用日志 (最近 100KB) ---`,
+        `--- 应用日志 (最近50KB) ---`,
         appLog,
       ].join('\n');
 
