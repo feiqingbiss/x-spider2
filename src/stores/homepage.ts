@@ -41,7 +41,7 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
   setKeyword: (kw: string) => set({ keyword: kw }),
   filter: {
     mediaTypes: [MediaType.Photo, MediaType.Video, MediaType.Gif],
-    source: 'tweets', // 改为默认帖子源
+    source: 'medias', // 默认使用媒体源
   },
   setFilter: (filter) => set({ filter }),
 
