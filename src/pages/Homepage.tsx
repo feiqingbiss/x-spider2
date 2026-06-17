@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
+import { Avatar, Button, Input, Space, App, Card, Progress, Radio } from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   HistoryOutlined,
@@ -39,7 +39,15 @@ const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => 
     const timer = setTimeout(() => {
       reject(new Error(`请求超时（超过${timeoutMs / 1000}秒）`));
     }, timeoutMs);
-    promise.then((result) => { clearTimeout(timer); resolve(result); }).catch((err) => { clearTimeout(timer); reject(err); });
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
   });
 };
 
@@ -70,6 +78,8 @@ export const Homepage: React.FC = () => {
     clearUser,
     loadUser,
     clearPostList: clearMediaList,
+    filter,
+    setFilter,
   } = useHomepageStore();
 
   const {
@@ -88,7 +98,7 @@ export const Homepage: React.FC = () => {
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
   const getListFilePath = async (): Promise<string> => {
-    const baseDir = saveDirBase || await path.appDataDir();
+    const baseDir = saveDirBase || (await path.appDataDir());
     return await path.join(baseDir, 'search-user-name.txt');
   };
 
@@ -188,8 +198,6 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  const homepageFilter = useHomepageStore((s) => s.filter);
-
   const removeUserFromList = async (username: string) => {
     try {
       const filePath = await getListFilePath();
@@ -263,7 +271,7 @@ export const Homepage: React.FC = () => {
         });
         try {
           const user = await withTimeout(getUser(name), TIMEOUT_MS);
-          downloadStore.createCreationTask(user, homepageFilter);
+          downloadStore.createCreationTask(user, filter);
           successCount++;
         } catch (err: any) {
           console.error(`获取用户 ${name} 失败:`, err);
@@ -394,10 +402,20 @@ export const Homepage: React.FC = () => {
             className="bg-blue-50/20 border-blue-100/50 shadow-sm"
             bodyStyle={{ padding: '10px 16px' }}
           >
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <span className="text-gray-400 text-sm">已就绪：</span>
-                <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
+            <div className="flex items-center justify-between flex-wrap gap-y-2">
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center">
+                  <span className="text-gray-400 text-sm">已就绪：</span>
+                  <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
+                </div>
+                <Radio.Group
+                  value={filter.source}
+                  onChange={(e) => setFilter({ ...filter, source: e.target.value })}
+                  size="small"
+                >
+                  <Radio.Button value="medias">媒体</Radio.Button>
+                  <Radio.Button value="tweets">帖子</Radio.Button>
+                </Radio.Group>
               </div>
 
               <Space size="middle">
