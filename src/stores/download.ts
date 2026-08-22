@@ -365,7 +365,6 @@ const EXIST_RATIO_THRESHOLD = 0.5;        // 存在比例阈值，高于此值�
  */
 async function preCheckLocalExistence(
   user: TwitterUser,
-  filter: DownloadFilter,
 ): Promise<{ existRatio: number; totalMediaCount: number }> {
   try {
     const { twitterPosts } = await getUserTweets(user.id, undefined, PRE_CHECK_COUNT);
@@ -408,7 +407,7 @@ async function preCheckLocalExistence(
 async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
   // ----- 1. 预检阶段 -----
   const { filter, user } = task;
-  const preCheckResult = await preCheckLocalExistence(user, filter);
+  const preCheckResult = await preCheckLocalExistence(user);
   let useMediaSource = false;
   if (preCheckResult.totalMediaCount > 0) {
     useMediaSource = preCheckResult.existRatio >= EXIST_RATIO_THRESHOLD;
@@ -479,7 +478,10 @@ async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
         if (useMediaSource) {
           logFn('warn', `媒体源无结果，切换到帖子源重试`);
           // 重新执行，使用帖子源
-          const updatedTask = { ...task, filter: { ...filter, source: 'tweets' } };
+          const updatedTask: CreationTask = {
+            ...task,
+            filter: { ...filter, source: 'tweets' as const }
+          };
           await runCreationTask(updatedTask, abortSignal);
           return;
         }
@@ -619,4 +621,3 @@ setTimeout(scheduleCreationTasks, 10);
     }
   }
 })();
-
