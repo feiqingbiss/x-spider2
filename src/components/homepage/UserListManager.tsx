@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, Input, Button, List, Space, App } from 'antd';
+import { Modal, Input, Button, Space, App } from 'antd';
 import {
   PlusOutlined,
   DeleteOutlined,
@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { path, fs, shell } from '@tauri-apps/api';
 import { useSettingsStore } from '../../stores/settings';
+import { FixedSizeList } from 'react-window';
 
 interface Props {
   visible: boolean;
@@ -29,7 +30,7 @@ export const UserListManager: React.FC<Props> = ({
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
   const getListFilePath = async (): Promise<string> => {
-    const baseDir = saveDirBase || await path.appDataDir();
+    const baseDir = saveDirBase || (await path.appDataDir());
     return await path.join(baseDir, 'search-user-name.txt');
   };
 
@@ -60,7 +61,6 @@ export const UserListManager: React.FC<Props> = ({
     const filePath = await getListFilePath();
     const content = newUsers.map((u) => `https://x.com/${u}`).join('\n');
     await fs.writeTextFile(filePath, content);
-    // 不再调用 importHistoryFromFile，只在外部通知数量变化
     onChanged?.();
   };
 
@@ -174,10 +174,27 @@ export const UserListManager: React.FC<Props> = ({
     return users.filter((u) => u.toLowerCase().includes(kw));
   }, [users, searchKeyword]);
 
+  const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
+    const item = filteredUsers[index];
+    return (
+      <div style={style} className="flex items-center justify-between px-2">
+        <span className="truncate max-w-[300px]">{item}</span>
+        <Button
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          onClick={() => handleDelete(item)}
+        >
+          删除
+        </Button>
+      </div>
+    );
+  };
+
   return (
     <Modal
       title="管理下载名单"
-      visible={visible}
+      open={visible}
       onCancel={onClose}
       footer={null}
       width={500}
@@ -217,26 +234,18 @@ export const UserListManager: React.FC<Props> = ({
           allowClear
         />
 
-        <List
-          dataSource={filteredUsers}
-          renderItem={(item) => (
-            <List.Item
-              actions={[
-                <Button
-                  key="delete"
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleDelete(item)}
-                >
-                  删除
-                </Button>,
-              ]}
-            >
-              <span className="truncate max-w-[300px]">{item}</span>
-            </List.Item>
-          )}
-        />
+        {filteredUsers.length > 0 ? (
+          <FixedSizeList
+            height={300}
+            itemCount={filteredUsers.length}
+            itemSize={40}
+            width="100%"
+          >
+            {Row}
+          </FixedSizeList>
+        ) : (
+          <div className="text-center text-gray-400 py-4">暂无用户</div>
+        )}
       </Space>
     </Modal>
   );

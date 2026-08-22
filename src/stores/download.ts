@@ -547,7 +547,7 @@ setTimeout(scheduleCreationTasks, 10);
 // ================= 自动同步 =================
 (async function autoSync() {
   while (true) {
-    await delay(1000);
+    await delay(2000); // 从 1000ms 改为 2000ms
     const ids = useDownloadStore.getState().autoSyncTaskIds;
     if (!ids.length) continue;
     try {
@@ -558,8 +558,18 @@ setTimeout(scheduleCreationTasks, 10);
       const updated = await Promise.all(
         downloadTasks.map(async (old) => {
           if (old.updatedAt > now || !resultMap[old.gid]) return old;
-          return mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
-        }),
+          const merged = await mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
+          // 仅当状态或进度变化时才返回新对象，否则返回旧对象（避免无谓更新）
+          if (
+            merged.status === old.status &&
+            merged.completeSize === old.completeSize &&
+            merged.totalSize === old.totalSize &&
+            merged.error === old.error
+          ) {
+            return old;
+          }
+          return merged;
+        })
       );
       batchUpdateDownloadTasks(updated);
     } catch (e) {

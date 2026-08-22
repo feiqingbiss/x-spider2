@@ -45,10 +45,9 @@ export const PostListGridView: React.FC = () => {
     [postList.list],
   );
 
-  const requestFn = useCallback(async () => {
-    let state = useHomepageStore.getState();
-
+  const loadMore = useCallback(async () => {
     try {
+      const state = useHomepageStore.getState();
       if (!state.postList.list) {
         await state.loadPostList();
       } else {
@@ -57,17 +56,21 @@ export const PostListGridView: React.FC = () => {
     } catch (err: any) {
       message.error(err.message);
     }
+  }, [message]);
 
-    state = useHomepageStore.getState();
+  const requestFn = useCallback(async () => {
+    await loadMore();
+    const state = useHomepageStore.getState();
     return {
       hasMore: !!state.postList.cursor,
     };
-  }, []);
+  }, [loadMore]);
 
   return (
     <InfiniteScroll
       requestFn={requestFn}
       className="overflow-y-auto pb-10 overflow-hidden h-[inherit]"
+      threshold={200}
     >
       {postList.loading && !postList.list ? (
         <div role="status">
