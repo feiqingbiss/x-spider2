@@ -2,7 +2,7 @@
 import { dialog } from '@tauri-apps/api';
 import { Button } from 'antd';
 import * as R from 'ramda';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useDeferredValue } from 'react';
 import { FixedSizeList } from 'react-window';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
@@ -63,6 +63,9 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   const tasks = useMemo(() => {
     return filterTasks(downloadTasks);
   }, [downloadTasks, filterTasks]);
+
+  // 使用 useDeferredValue 让列表更新延后，避免阻塞主线程
+  const deferredTasks = useDeferredValue(tasks);
 
   const pauseAll = async () => {
     await pauseAllDownloadTask();
@@ -141,14 +144,14 @@ export const DownloadList: React.FC<DownloadListProps> = ({
       >
         <FixedSizeList
           height={listHeight}
-          itemCount={tasks.length}
+          itemCount={deferredTasks.length}
           itemSize={ITEM_CLIENT_HEIGHT + ITEM_GAP}
           width={'100%'}
-          itemData={tasks}
+          itemData={deferredTasks}
           itemKey={(index, data) => data[index].gid}
           onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
             onInScreenTasksChanged?.(
-              tasks.slice(visibleStartIndex, visibleStopIndex),
+              deferredTasks.slice(visibleStartIndex, visibleStopIndex),
             );
           }}
         >

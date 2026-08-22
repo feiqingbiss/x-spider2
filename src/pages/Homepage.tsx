@@ -129,13 +129,11 @@ export const Homepage: React.FC = () => {
     fetchUserListCount();
   }, [fetchUserListCount]);
 
-  // 手动刷新：只更新数字，不影响搜索历史
   const handleRefresh = async () => {
     await fetchUserListCount();
     message.success('列表已刷新（搜索历史不变）');
   };
 
-  // 更新 invalid_folders.txt
   const updateInvalidFolders = async () => {
     if (!saveDirBase) return;
     try {
@@ -495,7 +493,7 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 图墙 */}
+      {/* 图墙 - 修改 overflow-hidden 为 overflow-auto，让滚动条出现 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
           <PostListGridView />

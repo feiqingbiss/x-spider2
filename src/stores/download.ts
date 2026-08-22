@@ -356,158 +356,201 @@ const MAX_ACTIVE_TASKS = 1;
 const MIN_API_INTERVAL_MS = 2000;
 const MAX_ADDITIONAL_DELAY_MS = 4000;
 const RATE_LIMIT_WAIT_MS = 30000;
+const PRE_CHECK_COUNT = 15;               // 预检推文数量
+const EXIST_RATIO_THRESHOLD = 0.5;        // 存在比例阈值，高于此值使用媒体源
 
-async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
-  let currentSource: 'medias' | 'tweets' = task.filter.source;
-  let triedSwitching = false;
+/**
+ * 预检：获取最近 N 条推文，检查本地媒体是否存在
+ * 返回 { existRatio, totalMediaCount }
+ */
+async function preCheckLocalExistence(
+  user: TwitterUser,
+  filter: DownloadFilter,
+): Promise<{ existRatio: number; totalMediaCount: number }> {
+  try {
+    const { twitterPosts } = await getUserTweets(user.id, undefined, PRE_CHECK_COUNT);
+    if (!twitterPosts.length) return { existRatio: 0, totalMediaCount: 0 };
 
-  const executeWithSource: (source: 'medias' | 'tweets') => Promise<void> = async (source) => {
-    const { filter, user } = task;
-    const store = useDownloadStore.getState();          // <-- 修复：补回 store 定义
-    const settings = useSettingsStore.getState();       // <-- 修复：补回 settings 定义
-    const getListFn = source === 'medias' ? getUserMedias : getUserTweets;
+    const settings = useSettingsStore.getState();
+    let existCount = 0;
+    let totalMediaCount = 0;
 
-    logFn('info', `开始处理用户: ${user.screenName} (源: ${source})`);
-
-    let completeCount = 0,
-      skipCount = 0;
-    let now = dayjs();
-    const since = filter.dateRange?.[0] || dayjs.unix(0);
-    const until = filter.dateRange?.[1] || now.clone();
-    let nextCursor: string | undefined | null = undefined;
-    let consecutiveSkippedPosts = 0,
-      retriedInitialEmpty = false;
-
-    while (nextCursor !== null && now.isAfter(since)) {
-      if (abortSignal.aborted) break;
-
-      const delayMs =
-        MIN_API_INTERVAL_MS +
-        Math.floor(Math.random() * MAX_ADDITIONAL_DELAY_MS);
-      logFn('info', `等待 ${delayMs}ms 后发起下一次请求...`);
-      await delay(delayMs);
-
-      logFn('info', `--- API 请求: userId=${user.id}, cursor=${nextCursor} ---`);
-      let resp;
-      try {
-        resp = await getListFn(user.id, nextCursor);
-      } catch (apiErr: any) {
-        const errMsg =
-          typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
-        logFn('error', `API请求失败: ${errMsg}`);
-        if (
-          errMsg.includes('expected value at line 1 column 1') ||
-          errMsg.includes('status=429')
-        ) {
-          logFn('warn', `检测到 API 限流，等待 ${RATE_LIMIT_WAIT_MS / 1000} 秒后重试...`);
-          antNotification.warning({
-            message: '检测到 API 限流',
-            description: `任务 ${user.screenName} 将在 ${
-              RATE_LIMIT_WAIT_MS / 1000
-            } 秒后重试`,
-          });
-          await delay(RATE_LIMIT_WAIT_MS);
-          if (!triedSwitching) {
-            triedSwitching = true;
-            const fallbackSource = source === 'tweets' ? 'medias' : 'tweets';
-            logFn('warn', `切换到源: ${fallbackSource} 进行重试`);
-            return executeWithSource(fallbackSource);
+    for (const post of twitterPosts) {
+      if (!post.medias?.length) continue;
+      for (const media of post.medias) {
+        totalMediaCount++;
+        try {
+          const templateData: FileNameTemplateData = { media, post };
+          const resolvedDirName = settings.download.dirTemplate
+            ? resolveVariables(settings.download.dirTemplate, templateData)
+            : '';
+          const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
+          const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
+          const filePath = await path.join(dir, fileName);
+          if (await fs.exists(filePath)) {
+            existCount++;
           }
-        }
-        throw apiErr;
-      }
-      if (abortSignal.aborted) break;
-      const { twitterPosts, cursor } = resp;
-      logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
-
-      if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
-        logFn('warn', '首次获取为空，重试');
-        await delay(2000);
-        retriedInitialEmpty = true;
-        const retry = await getListFn(user.id, undefined);
-        if (retry.twitterPosts.length === 0) {
-          if (!triedSwitching) {
-            triedSwitching = true;
-            const fallbackSource = source === 'tweets' ? 'medias' : 'tweets';
-            logFn('warn', `初始源 ${source} 无结果，切换到 ${fallbackSource} 重试`);
-            return executeWithSource(fallbackSource);
-          }
-          const errMsg = `用户 ${user.screenName} 无帖子`;
-          logFn('error', errMsg);
-          throw new Error(errMsg);
-        }
-        nextCursor = retry.cursor;
-        now = R.last(retry.twitterPosts)?.createdAt || now;
-        continue;
-      }
-
-      nextCursor = cursor;
-      now = R.last(twitterPosts)?.createdAt || now;
-      const filteredPosts = twitterPosts.filter(
-        (p) =>
-          p.medias?.length &&
-          (!since || !p.createdAt || p.createdAt.isAfter(since)) &&
-          (!until || !p.createdAt || p.createdAt.isBefore(until)),
-      );
-      skipCount += twitterPosts.length - filteredPosts.length;
-
-      if (filteredPosts.length === 0) {
-        store.updateCreationTask({ ...task, completeCount, skipCount });
-        continue;
-      }
-
-      const paramsList: CreateDownloadTaskParams[] = [];
-      for (const post of filteredPosts) {
-        let postAdded = false;
-        for (const media of post.medias!) {
-          if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
-          try {
-            const dlTask = await prepareDownloadTask({ post, media });
-            const filePath = await path.join(dlTask.dir, dlTask.fileName);
-            if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
-              skipCount++;
-              continue;
-            }
-            paramsList.push({ media, post });
-            postAdded = true;
-          } catch (e: any) {
-            logFn('error', `准备失败: ${e.message}`);
-            skipCount++;
-          }
-        }
-        if (!postAdded) {
-          consecutiveSkippedPosts++;
-          if (consecutiveSkippedPosts >= 10) {
-            logFn('info', '连续跳过帖子达到阈值，提前结束');
-            store.updateCreationTask({ ...task, completeCount, skipCount });
-            return;
-          }
-        } else {
-          consecutiveSkippedPosts = 0;
+        } catch (e) {
+          // 忽略单条错误
         }
       }
-
-      if (paramsList.length) {
-        await store.batchCreateDownloadTask(paramsList);
-        completeCount += paramsList.length;
-      }
-      store.updateCreationTask({ ...task, completeCount, skipCount });
     }
 
-    logFn('info', `用户 ${user.screenName} 完成: 下载 ${completeCount}, 跳过 ${skipCount}`);
-    antNotification.success({
-      message: `${user.screenName} 完成`,
-      description: `下载 ${completeCount}, 跳过 ${skipCount}`,
-    });
-  };
-
-  try {
-    await executeWithSource(currentSource);
-  } catch (err: any) {
-    const errMsg = typeof err?.message === 'string' ? err.message : String(err);
-    logFn('error', `用户 ${task.user.screenName} 异常: ${errMsg}`);
-    throw err;
+    const existRatio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
+    logFn('info', `预检结果: 存在 ${existCount}/${totalMediaCount}, 比例 ${existRatio}`);
+    return { existRatio, totalMediaCount };
+  } catch (err) {
+    logFn('error', '预检失败', err);
+    return { existRatio: 0, totalMediaCount: 0 };
   }
+}
+
+async function runCreationTask(task: CreationTask, abortSignal: AbortSignal) {
+  // ----- 1. 预检阶段 -----
+  const { filter, user } = task;
+  const preCheckResult = await preCheckLocalExistence(user, filter);
+  let useMediaSource = false;
+  if (preCheckResult.totalMediaCount > 0) {
+    useMediaSource = preCheckResult.existRatio >= EXIST_RATIO_THRESHOLD;
+    logFn('info', `预检决定使用 ${useMediaSource ? '媒体' : '帖子'} 源 (存在比例=${preCheckResult.existRatio})`);
+  } else {
+    useMediaSource = false;
+    logFn('info', '预检无媒体数据，使用帖子源');
+  }
+
+  // ----- 2. 执行下载 -----
+  const source = useMediaSource ? 'medias' : 'tweets';
+  const getListFn = useMediaSource ? getUserMedias : getUserTweets;
+
+  logFn('info', `开始处理用户: ${user.screenName} (源: ${source})`);
+
+  let completeCount = 0,
+    skipCount = 0;
+  let now = dayjs();
+  const since = filter.dateRange?.[0] || dayjs.unix(0);
+  const until = filter.dateRange?.[1] || now.clone();
+  let nextCursor: string | undefined | null = undefined;
+  let consecutiveSkippedPosts = 0,
+    retriedInitialEmpty = false;
+
+  while (nextCursor !== null && now.isAfter(since)) {
+    if (abortSignal.aborted) break;
+
+    const delayMs =
+      MIN_API_INTERVAL_MS +
+      Math.floor(Math.random() * MAX_ADDITIONAL_DELAY_MS);
+    logFn('info', `等待 ${delayMs}ms 后发起下一次请求...`);
+    await delay(delayMs);
+
+    logFn('info', `--- API 请求: userId=${user.id}, cursor=${nextCursor} ---`);
+    let resp;
+    try {
+      resp = await getListFn(user.id, nextCursor);
+    } catch (apiErr: any) {
+      const errMsg =
+        typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
+      logFn('error', `API请求失败: ${errMsg}`);
+      if (
+        errMsg.includes('expected value at line 1 column 1') ||
+        errMsg.includes('status=429')
+      ) {
+        logFn('warn', `检测到 API 限流，等待 ${RATE_LIMIT_WAIT_MS / 1000} 秒后重试...`);
+        antNotification.warning({
+          message: '检测到 API 限流',
+          description: `任务 ${user.screenName} 将在 ${
+            RATE_LIMIT_WAIT_MS / 1000
+          } 秒后重试`,
+        });
+        await delay(RATE_LIMIT_WAIT_MS);
+        continue;
+      }
+      throw apiErr;
+    }
+    if (abortSignal.aborted) break;
+    const { twitterPosts, cursor } = resp;
+    logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
+
+    if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
+      logFn('warn', '首次获取为空，重试');
+      await delay(2000);
+      retriedInitialEmpty = true;
+      const retry = await getListFn(user.id, undefined);
+      if (retry.twitterPosts.length === 0) {
+        if (useMediaSource) {
+          logFn('warn', `媒体源无结果，切换到帖子源重试`);
+          // 重新执行，使用帖子源
+          const updatedTask = { ...task, filter: { ...filter, source: 'tweets' } };
+          await runCreationTask(updatedTask, abortSignal);
+          return;
+        }
+        const errMsg = `用户 ${user.screenName} 无帖子`;
+        logFn('error', errMsg);
+        throw new Error(errMsg);
+      }
+      nextCursor = retry.cursor;
+      now = R.last(retry.twitterPosts)?.createdAt || now;
+      continue;
+    }
+
+    nextCursor = cursor;
+    now = R.last(twitterPosts)?.createdAt || now;
+    const filteredPosts = twitterPosts.filter(
+      (p) =>
+        p.medias?.length &&
+        (!since || !p.createdAt || p.createdAt.isAfter(since)) &&
+        (!until || !p.createdAt || p.createdAt.isBefore(until)),
+    );
+    skipCount += twitterPosts.length - filteredPosts.length;
+
+    if (filteredPosts.length === 0) {
+      useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+      continue;
+    }
+
+    const paramsList: CreateDownloadTaskParams[] = [];
+    const settings = useSettingsStore.getState();
+    for (const post of filteredPosts) {
+      let postAdded = false;
+      for (const media of post.medias!) {
+        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
+        try {
+          const dlTask = await prepareDownloadTask({ post, media });
+          const filePath = await path.join(dlTask.dir, dlTask.fileName);
+          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+            skipCount++;
+            continue;
+          }
+          paramsList.push({ media, post });
+          postAdded = true;
+        } catch (e: any) {
+          logFn('error', `准备失败: ${e.message}`);
+          skipCount++;
+        }
+      }
+      if (!postAdded) {
+        consecutiveSkippedPosts++;
+        if (consecutiveSkippedPosts >= 10) {
+          logFn('info', '连续跳过帖子达到阈值，提前结束');
+          useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+          return;
+        }
+      } else {
+        consecutiveSkippedPosts = 0;
+      }
+    }
+
+    if (paramsList.length) {
+      await useDownloadStore.getState().batchCreateDownloadTask(paramsList);
+      completeCount += paramsList.length;
+    }
+    useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+  }
+
+  logFn('info', `用户 ${user.screenName} 完成: 下载 ${completeCount}, 跳过 ${skipCount}`);
+  antNotification.success({
+    message: `${user.screenName} 完成`,
+    description: `下载 ${completeCount}, 跳过 ${skipCount}`,
+  });
 }
 
 // ================= 调度器 =================
@@ -544,10 +587,10 @@ async function scheduleCreationTasks() {
 }
 setTimeout(scheduleCreationTasks, 10);
 
-// ================= 自动同步 =================
+// ================= 自动同步（优化版） =================
 (async function autoSync() {
   while (true) {
-    await delay(2000); // 从 1000ms 改为 2000ms
+    await delay(2000);
     const ids = useDownloadStore.getState().autoSyncTaskIds;
     if (!ids.length) continue;
     try {
@@ -559,7 +602,6 @@ setTimeout(scheduleCreationTasks, 10);
         downloadTasks.map(async (old) => {
           if (old.updatedAt > now || !resultMap[old.gid]) return old;
           const merged = await mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
-          // 仅当状态或进度变化时才返回新对象，否则返回旧对象（避免无谓更新）
           if (
             merged.status === old.status &&
             merged.completeSize === old.completeSize &&
@@ -577,3 +619,4 @@ setTimeout(scheduleCreationTasks, 10);
     }
   }
 })();
+
