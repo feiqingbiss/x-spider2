@@ -69,7 +69,7 @@ export const PostListGridView: React.FC = () => {
   return (
     <InfiniteScroll
       requestFn={requestFn}
-      className="overflow-y-auto pb-10 overflow-hidden h-[inherit]"
+      className="overflow-y-auto pb-10 h-[inherit]"
       threshold={200}
     >
       {postList.loading && !postList.list ? (

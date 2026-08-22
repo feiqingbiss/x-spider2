@@ -497,7 +497,7 @@ export const Homepage: React.FC = () => {
 
       {/* 图墙 */}
       {userInfo.data && (
-        <section className="relative grow overflow-hidden bg-gray-50 border-t border-gray-100">
+        <section className="relative grow overflow-auto border-t border-gray-100">
           <PostListGridView />
         </section>
       )}
