@@ -1,12 +1,11 @@
 import { create } from 'zustand';
 import * as R from 'ramda';
-import { AriaStatus, aria2 } from '../../utils/aria2';
-import { DownloadFilter } from '../../interfaces/DownloadFilter';
-import { TwitterUser } from '../../interfaces/TwitterUser';
+import { aria2 } from '../../utils/aria2';
+// 移除 AriaStatus, DownloadFilter, TwitterUser
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { notification } from '@tauri-apps/api';
 import { notification as antNotification } from 'antd';
-import { DownloadStore, CreateDownloadTaskParams, BatchProgress } from './types';
+import { DownloadStore } from './types';
 import { prepareDownloadTask, mergeAriaStatusToDownloadTask, logFn } from './utils';
 import { creationTaskAbortControllerMap } from './creation';
 import { delay } from '../../utils';

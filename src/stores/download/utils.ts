@@ -1,13 +1,12 @@
-import { fs, notification, path } from '@tauri-apps/api';
-import * as R from 'ramda';
-import { AriaStatus, aria2 } from '../../utils/aria2';
+import { fs, path } from '@tauri-apps/api';
+// 移除 R, aria2, notification, delay
+import { AriaStatus } from '../../utils/aria2';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { CreateDownloadTaskParams } from './types';
 import { useSettingsStore } from '../settings';
 import { getDownloadUrl } from '../../twitter/utils';
 import { resolveVariables } from '../../utils/file-name-template';
 import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
-import { delay } from '../../utils';
 
 // ================= 日志系统 =================
 const MAX_LOG_FILE_SIZE = 150 * 1024;

@@ -26,17 +26,3 @@ export const perf = {
     writeDebugLog(`[PERF] ${message}`);
   }
 };
-
-// 导出性能日志文件（用户可在设置中手动导出）
-export async function exportPerformanceLog() {
-  const filePath = await ensureDebugLogPath();
-  // 由于日志已存在于 debug-dl.log，只需提示用户到日志文件夹查看
-  // 或者单独写入 perf.log
-  const dataDir = await path.appDataDir();
-  const logsDir = await path.join(dataDir, 'logs');
-  const perfLogPath = await path.join(logsDir, 'perf.log');
-  // 从 debug-dl.log 中提取 [PERF] 行
-  // 但为简化，我们建议用户查看 debug-dl.log 中包含 [PERF] 的行
-  // 或者我们单独写入 perf.log
-  // 这里为了简单，不重复实现
-}

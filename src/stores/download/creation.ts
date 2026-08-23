@@ -1,14 +1,14 @@
-import { fs, notification, path } from '@tauri-apps/api';
+import { fs, path } from '@tauri-apps/api';
 import * as R from 'ramda';
 import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
-import { DownloadFilter } from '../../interfaces/DownloadFilter';
+// 移除 DownloadFilter 导入（未使用）
 import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
 import { useDownloadStore } from './store';
-import { prepareDownloadTask, logFn, writeDebugLog } from './utils';
+import { prepareDownloadTask, logFn } from './utils';
 import { perf } from './performance';
 import { delay } from '../../utils';
 import { resolveVariables } from '../../utils/file-name-template';

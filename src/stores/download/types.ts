@@ -1,12 +1,4 @@
-import { Dayjs } from 'dayjs';
-import { AriaStatus } from '../../utils/aria2';
-import { TwitterMedia } from '../../interfaces/TwitterMedia';
-import { TwitterPost } from '../../interfaces/TwitterPost';
-import { TwitterUser } from '../../interfaces/TwitterUser';
-import { DownloadFilter } from '../../interfaces/DownloadFilter';
-import { DownloadTask } from '../../interfaces/DownloadTask';
-import { CreationTask } from '../../interfaces/CreationTask';
-
+// 移除未使用的 Dayjs, AriaStatus
 export interface CreateDownloadTaskParams {
   post: TwitterPost;
   media: TwitterMedia;
