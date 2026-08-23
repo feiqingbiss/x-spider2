@@ -2,7 +2,7 @@
 import { dialog } from '@tauri-apps/api';
 import { Button } from 'antd';
 import * as R from 'ramda';
-import React, { useCallback, useMemo, useRef, useState, useDeferredValue, useTransition } from 'react';
+import React, { useCallback, useMemo, useRef, useState, useDeferredValue } from 'react';
 import { FixedSizeList } from 'react-window';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
@@ -66,11 +66,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
 
   // 使用 useDeferredValue 让列表更新延后，避免阻塞主线程
   const deferredTasks = useDeferredValue(tasks);
-  // 使用 useTransition 标记更新为低优先级
-  const [isPending, startTransition] = useTransition();
-
-  // 当任务数量变化时，用 transition 包裹更新（实际上 useDeferredValue 已经做了类似工作，但结合 useTransition 可以更明确）
-  // 但我们直接使用 deferredTasks 即可
 
   const pauseAll = async () => {
     await pauseAllDownloadTask();
@@ -111,7 +106,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
       <CreationTasks />
       <section>
         <span>共 {tasks.length} 个下载任务。</span>
-        {isPending && <span className="ml-2 text-gray-400">（更新中...）</span>}
       </section>
       <ul className="flex space-x-2 mt-3">
         {batchActions?.includes('unpauseAll') && (
@@ -155,7 +149,7 @@ export const DownloadList: React.FC<DownloadListProps> = ({
           width={'100%'}
           itemData={deferredTasks}
           itemKey={(index, data) => data[index].gid}
-          overscanCount={5} // 预渲染上下各5项，减少滚动时的空白
+          overscanCount={5}
           onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
             onInScreenTasksChanged?.(
               deferredTasks.slice(visibleStartIndex, visibleStopIndex),
