@@ -10,7 +10,7 @@ import {
 import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
 import { buildPostUrl, buildUserUrl } from '../../twitter/url';
@@ -41,6 +41,8 @@ const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemP
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
     const { message } = App.useApp();
+    const [imageLoaded, setImageLoaded] = useState(false);
+
     const {
       removeDownloadTask,
       pauseDownloadTask,
@@ -54,6 +56,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       redownloadTask: s.redownloadTask,
       batchRedownloadTask: s.batchRedownloadTask,
     }));
+
     const actionRedownload: TaskAction = {
       name: '重新下载',
       onClick: async () => {
@@ -140,32 +143,52 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
+    const imgSrc = `${t.media.url}?format=jpg&name=thumb`;
+
     return (
       <div
         role="listitem"
         className="bg-white border-[1px] border-gray-300 rounded-md flex overflow-hidden"
       >
-        <a
-          href={
-            t.post.user?.screenName && t.post.id
-              ? buildPostUrl(t.post.user.screenName, t.post.id)
-              : 'javascript:void(0);'
-          }
-          target="_blank"
-          rel="noreferrer"
-          className="shrink-0 overflow-hidden"
+        {/* 左侧缩略图区域 */}
+        <div
+          className="shrink-0 overflow-hidden relative bg-gray-100"
           style={{
             width: itemClientHeight,
             height: itemClientHeight,
           }}
-          title="打开推文页"
         >
-          <img
-            src={`${t.media.url}?format=jpg&name=thumb`}
-            loading="lazy"
-            className="w-full h-full object-cover transition-transform transform hover:scale-105"
-          />
-        </a>
+          {/* 骨架占位（图片加载前显示） */}
+          {!imageLoaded && (
+            <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
+              加载中...
+            </div>
+          )}
+          <a
+            href={
+              t.post.user?.screenName && t.post.id
+                ? buildPostUrl(t.post.user.screenName, t.post.id)
+                : 'javascript:void(0);'
+            }
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full h-full"
+            title="打开推文页"
+          >
+            <img
+              src={imgSrc}
+              loading="lazy"
+              className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
+                imageLoaded ? 'block' : 'hidden'
+              }`}
+              onLoad={() => setImageLoaded(true)}
+              onError={() => setImageLoaded(true)} // 加载失败也显示占位
+              alt="缩略图"
+            />
+          </a>
+        </div>
+
+        {/* 右侧信息区 */}
         <div className="ml-4 overflow-hidden pr-4 w-full h-full">
           <p
             title={t.fileName}
