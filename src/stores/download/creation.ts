@@ -4,7 +4,6 @@ import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
-// 移除 DownloadFilter 导入（未使用）
 import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
 import { useDownloadStore } from './store';
@@ -21,6 +20,8 @@ const MAX_ADDITIONAL_DELAY_MS = 4000;
 const RATE_LIMIT_WAIT_MS = 30000;
 const PRE_CHECK_COUNT = 15;
 const EXIST_RATIO_THRESHOLD = 0.5;
+const MAX_QUEUE_SIZE = 50; // 队列最大长度，超过时暂停接受新任务
+const UI_UPDATE_INTERVAL = 3; // 每处理完 N 个用户更新一次 UI
 
 // 中止控制器映射
 export const creationTaskAbortControllerMap = new Map<string, AbortController>();
@@ -100,6 +101,7 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
   let consecutiveSkippedPosts = 0,
     retriedInitialEmpty = false;
   let shouldUpdateUI = false;
+  let processedUserCount = 0; // 累计处理用户数，用于降低 UI 更新频率
 
   while (nextCursor !== null && now.isAfter(since)) {
     if (abortSignal.aborted) break;
@@ -195,6 +197,7 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
         consecutiveSkippedPosts++;
         if (consecutiveSkippedPosts >= 10) {
           logFn('info', '连续跳过帖子达到阈值，提前结束');
+          // 最终更新一次 UI
           useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
           perf.measure(`runTask-${taskId}`, `runTask-${taskId}-start`, `runTask-${taskId}-end`);
           return;
@@ -211,13 +214,16 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
       completeCount += paramsList.length;
     }
     shouldUpdateUI = true;
+    processedUserCount++;
 
-    if (shouldUpdateUI) {
+    // 降低 UI 更新频率：每处理完 UI_UPDATE_INTERVAL 个用户或 shouldUpdateUI 为 true 时才更新
+    if (shouldUpdateUI && processedUserCount % UI_UPDATE_INTERVAL === 0) {
       useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
       shouldUpdateUI = false;
     }
   }
 
+  // 最终更新一次，确保进度准确
   useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
 
   logFn('info', `用户 ${user.screenName} 完成: 下载 ${completeCount}, 跳过 ${skipCount}`);
@@ -232,6 +238,14 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
 export async function scheduleCreationTasks() {
   const state = useDownloadStore.getState();
   const { creationTasks } = state;
+
+  // 检查队列是否过长，过长则等待
+  if (creationTasks.length > MAX_QUEUE_SIZE) {
+    logFn('warn', `创建任务队列过长 (${creationTasks.length} > ${MAX_QUEUE_SIZE})，等待中...`);
+    setTimeout(scheduleCreationTasks, 2000);
+    return;
+  }
+
   const active = creationTasks.filter((t) => t.status === 'active').length;
   if (active >= MAX_ACTIVE_TASKS) {
     setTimeout(scheduleCreationTasks, 1000);
@@ -260,4 +274,5 @@ export async function scheduleCreationTasks() {
   }
   setTimeout(scheduleCreationTasks, 500);
 }
+// 首次启动调度器
 setTimeout(scheduleCreationTasks, 10);

@@ -20,8 +20,11 @@ import { getUser } from '../twitter/api';
 import { useDownloadStore } from '../stores/download';
 import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
+import { delay } from '../utils';
 
 const TIMEOUT_MS = 30000;
+const BATCH_SIZE = 10;          // 每批处理用户数
+const BATCH_DELAY_MS = 1000;    // 批次间隔
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -67,6 +70,7 @@ export const Homepage: React.FC = () => {
   const [historyVisible, setHistoryVisible] = useState(true);
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
 
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
@@ -220,12 +224,18 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 一键批量下载
+  // 一键批量下载（分批执行）
   const batchDownload = async () => {
+    if (isBatchRunning) {
+      message.warning('已有批量任务正在运行，请耐心等待');
+      return;
+    }
+
     if (!cookieString) {
       message.error('请先登录');
       return;
     }
+
     try {
       const filePath = await getListFilePath();
       let content = '';
@@ -241,6 +251,7 @@ export const Homepage: React.FC = () => {
             .trim(),
         )
         .filter((n) => n.length > 0);
+
       if (usernames.length === 0) {
         message.warning('名单为空，请先添加用户');
         return;
@@ -249,6 +260,7 @@ export const Homepage: React.FC = () => {
       // 随机打乱
       usernames = shuffleArray(usernames);
 
+      setIsBatchRunning(true);
       setBatchProgress({
         total: usernames.length,
         completed: 0,
@@ -260,48 +272,64 @@ export const Homepage: React.FC = () => {
       let failCount = 0;
       let timeoutCount = 0;
 
-      for (let i = 0; i < usernames.length; i++) {
-        const name = usernames[i];
-        setBatchProgress({
-          total: usernames.length,
-          completed: i,
-          currentUser: name,
-        });
-        try {
-          const user = await withTimeout(getUser(name), TIMEOUT_MS);
-          downloadStore.createCreationTask(user, filter);
-          successCount++;
-        } catch (err: any) {
-          console.error(`获取用户 ${name} 失败:`, err);
-          failCount++;
-          if (err?.message?.includes('超时')) {
-            timeoutCount++;
-            notification.warning({
-              message: `用户 ${name} 请求超时，已暂时跳过`,
-              description: err.message,
+      // 分批处理
+      for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
+        const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
+
+        // 并行处理当前批次内的用户
+        await Promise.all(
+          batch.map(async (name) => {
+            const index = usernames.indexOf(name);
+            setBatchProgress({
+              total: usernames.length,
+              completed: index,
+              currentUser: name,
             });
-          } else if (isUserNotFoundError(err)) {
-            await removeUserFromList(name);
-            notification.warning({
-              message: `用户 ${name} 不存在，已自动移除`,
+
+            try {
+              const user = await withTimeout(getUser(name), TIMEOUT_MS);
+              downloadStore.createCreationTask(user, filter);
+              successCount++;
+            } catch (err: any) {
+              console.error(`获取用户 ${name} 失败:`, err);
+              failCount++;
+              if (err?.message?.includes('超时')) {
+                timeoutCount++;
+                notification.warning({
+                  message: `用户 ${name} 请求超时，已暂时跳过`,
+                  description: err.message,
+                });
+              } else if (isUserNotFoundError(err)) {
+                await removeUserFromList(name);
+                notification.warning({
+                  message: `用户 ${name} 不存在，已自动移除`,
+                });
+              } else {
+                notification.warning({
+                  message: `用户 ${name} 加载失败`,
+                  description: err?.message || '未知错误',
+                });
+              }
+            }
+
+            setBatchProgress({
+              total: usernames.length,
+              completed: index + 1,
+              currentUser: name,
             });
-          } else {
-            notification.warning({
-              message: `用户 ${name} 加载失败`,
-              description: err?.message || '未知错误',
-            });
-          }
+          })
+        );
+
+        // 批次间等待，让 UI 有时间渲染
+        if (i + BATCH_SIZE < usernames.length) {
+          await delay(BATCH_DELAY_MS);
         }
-        setBatchProgress({
-          total: usernames.length,
-          completed: i + 1,
-          currentUser: name,
-        });
       }
 
       await updateInvalidFolders();
 
       setBatchProgress(null);
+      setIsBatchRunning(false);
       const extraMsg = timeoutCount > 0 ? `，超时跳过 ${timeoutCount} 个` : '';
       message.success(
         `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}${extraMsg}`,
@@ -309,6 +337,7 @@ export const Homepage: React.FC = () => {
     } catch (err) {
       console.error('批量下载出错:', err);
       setBatchProgress(null);
+      setIsBatchRunning(false);
       message.error('批量下载发生未知错误');
       await updateInvalidFolders().catch(() => {});
     }
@@ -431,10 +460,10 @@ export const Homepage: React.FC = () => {
                   danger
                   icon={<CloudDownloadOutlined />}
                   onClick={batchDownload}
-                  disabled={!!batchProgress}
+                  disabled={!!batchProgress || isBatchRunning}
                   className="font-bold px-6"
                 >
-                  一键批量下载
+                  {isBatchRunning ? '批量下载中...' : '一键批量下载'}
                 </Button>
               </Space>
             </div>
@@ -493,7 +522,7 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 图墙 - 修改 overflow-hidden 为 overflow-auto，让滚动条出现 */}
+      {/* 图墙 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
           <PostListGridView />
