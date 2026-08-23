@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import clsx from 'clsx';
-import React, { useCallback } from 'react';
+import React, { useCallback, memo } from 'react';
 import { ROUTES } from '../constants/routes';
 import { Route } from '../interfaces/Route';
 import { useRouteStore } from '../stores/route';
@@ -12,7 +12,7 @@ interface SideBarItemProps {
   onNavigate: (route: Route) => void;
 }
 
-const Item: React.FC<SideBarItemProps> = React.memo(({ route, active, onNavigate }) => {
+const Item: React.FC<SideBarItemProps> = memo(({ route, active, onNavigate }) => {
   const handleClick = useCallback(() => {
     onNavigate(route);
   }, [route, onNavigate]);
@@ -36,7 +36,7 @@ const Item: React.FC<SideBarItemProps> = React.memo(({ route, active, onNavigate
 });
 Item.displayName = 'SideBarItem';
 
-export const SideBar: React.FC = () => {
+export const SideBar: React.FC = memo(() => {
   const current = useRouteStore((state) => state.route);
   const setRoute = useRouteStore((state) => state.setRoute);
 
@@ -70,4 +70,5 @@ export const SideBar: React.FC = () => {
       </nav>
     </aside>
   );
-};
+});
+SideBar.displayName = 'SideBar';

@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import { App, Avatar, Form, Input, Modal } from 'antd';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, memo } from 'react';
 import { useAppStateStore } from '../stores/app-state';
 import { getAccountInfo } from '../twitter/api';
 import { TwitterAccountInfo } from '../interfaces/TwitterAccountInfo';
@@ -10,7 +10,7 @@ import { useForm } from 'antd/es/form/Form';
 import { parseCookie, stringifyCookie } from '../utils/cookie';
 import clsx from 'clsx';
 
-export const Account: React.FC = () => {
+export const Account: React.FC = memo(() => {
   const [cookieString, setCookieString] = useAppStateStore((state) => [
     state.cookieString,
     state.setCookieString,
@@ -202,4 +202,5 @@ export const Account: React.FC = () => {
       </Modal>
     </>
   );
-};
+});
+Account.displayName = 'Account';

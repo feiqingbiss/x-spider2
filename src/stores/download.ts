@@ -589,10 +589,10 @@ async function scheduleCreationTasks() {
 }
 setTimeout(scheduleCreationTasks, 10);
 
-// ================= 自动同步（优化版） =================
+// ================= 自动同步（优化版，间隔3秒） =================
 (async function autoSync() {
   while (true) {
-    await delay(2000);
+    await delay(3000); // 从 2000ms 调整为 3000ms，降低更新频率
     const ids = useDownloadStore.getState().autoSyncTaskIds;
     if (!ids.length) continue;
     try {
