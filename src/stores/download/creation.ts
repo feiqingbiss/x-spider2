@@ -20,7 +20,6 @@ const MAX_ADDITIONAL_DELAY_MS = 4000;
 const RATE_LIMIT_WAIT_MS = 30000;
 const PRE_CHECK_COUNT = 15;
 const EXIST_RATIO_THRESHOLD = 0.5;
-const MAX_QUEUE_SIZE = 50; // 队列最大长度，超过时暂停接受新任务
 const UI_UPDATE_INTERVAL = 3; // 每处理完 N 个用户更新一次 UI
 
 // 中止控制器映射
@@ -239,13 +238,7 @@ export async function scheduleCreationTasks() {
   const state = useDownloadStore.getState();
   const { creationTasks } = state;
 
-  // 检查队列是否过长，过长则等待
-  if (creationTasks.length > MAX_QUEUE_SIZE) {
-    logFn('warn', `创建任务队列过长 (${creationTasks.length} > ${MAX_QUEUE_SIZE})，等待中...`);
-    setTimeout(scheduleCreationTasks, 2000);
-    return;
-  }
-
+  // 移除队列长度检查，避免死锁
   const active = creationTasks.filter((t) => t.status === 'active').length;
   if (active >= MAX_ACTIVE_TASKS) {
     setTimeout(scheduleCreationTasks, 1000);
