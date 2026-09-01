@@ -123,31 +123,22 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const status = await aria2.tellStatus(gid);
 
     if (status.status === 'error') {
-      // 检查 SSL/证书错误特殊处理
-      const errorMsg = status.errorMessage || '';
-      const isSslError = errorMsg.includes('SSL') || errorMsg.includes('证书') || errorMsg.includes('certificate');
-
       if (task.ariaRetryCountRemains > 0) {
         logFn('warn', `重试下载 ${task.ariaRetryCountRemains} (剩余重试次数: ${task.ariaRetryCountRemains - 1})`);
-
         // 优化：不删除任务，直接重新添加下载，并复用原有任务信息
         let newGid: string;
         try {
           newGid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
             dir: task.dir,
             out: task.fileName,
-            // 对 SSL 错误，添加额外参数跳过证书验证（aria2 已配置 --check-certificate=false）
-            // 但这里无需额外处理，aria2 启动时已配置
           });
         } catch (err: any) {
           logFn('error', `重试添加下载失败: ${err.message}`);
-          // 如果添加失败，移除任务并标记为错误
           const merged = await mergeAriaStatusToDownloadTask(status, task);
           updateDownloadTask({ ...merged, error: `重试失败: ${err.message}` }, now);
           return;
         }
 
-        // 创建新任务（复用原有信息，更新 gid 和重试次数）
         const newTask: DownloadTask = {
           ...task,
           gid: newGid,
@@ -161,7 +152,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         set({ downloadTasks: get().downloadTasks.concat(newTask) });
         logFn('info', `重试成功，新任务 gid: ${newGid}`);
 
-        // 立即获取新任务状态
         try {
           const newStatus = await aria2.tellStatus(newGid);
           if (newStatus.status !== 'error') {
@@ -171,22 +161,20 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
           // ignore
         }
       } else {
-        // 最终失败
         const merged = await mergeAriaStatusToDownloadTask(status, task);
         logFn('error', '下载失败（重试耗尽）', merged);
         antNotification.error({
           message: `下载失败: ${merged.fileName}`,
-          description: isSslError ? 'SSL/证书错误，请检查网络代理或证书设置' : (merged.error || '未知错误'),
+          description: merged.error || '未知错误',
           duration: 5,
         });
         notification.sendNotification({
           title: '下载失败',
-          body: `${merged.fileName} - ${isSslError ? 'SSL/证书错误' : (merged.error || '未知错误')}`,
+          body: `${merged.fileName} - ${merged.error || '未知错误'}`,
         });
         updateDownloadTask(merged, now);
       }
     } else {
-      // 正常状态更新
       updateDownloadTask(await mergeAriaStatusToDownloadTask(status, task), now);
     }
   },
@@ -223,10 +211,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   setBatchProgress: (p) => set({ batchProgress: p }),
 }));
 
-// ================= 自动同步（优化版，间隔3秒） =================
+// ================= 自动同步（优化版，间隔5秒） =================
 (async function autoSync() {
   while (true) {
-    await delay(3000);
+    await delay(5000);
     const ids = useDownloadStore.getState().autoSyncTaskIds;
     if (!ids.length) continue;
     try {

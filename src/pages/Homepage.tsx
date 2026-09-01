@@ -25,6 +25,8 @@ import { delay } from '../utils';
 const TIMEOUT_MS = 30000;
 const BATCH_SIZE = 10;          // 每批处理用户数
 const BATCH_DELAY_MS = 1000;    // 批次间隔
+const MAX_RETRIES = 3;          // 每个用户最大重试次数
+const RETRY_DELAY_MS = 5000;    // 重试间隔
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -224,7 +226,7 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 一键批量下载（分批执行）
+  // 一键批量下载（分批执行，含重试）
   const batchDownload = async () => {
     if (isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
@@ -276,7 +278,6 @@ export const Homepage: React.FC = () => {
       for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
         const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
 
-        // 并行处理当前批次内的用户
         await Promise.all(
           batch.map(async (name) => {
             const index = usernames.indexOf(name);
@@ -286,29 +287,63 @@ export const Homepage: React.FC = () => {
               currentUser: name,
             });
 
-            try {
-              const user = await withTimeout(getUser(name), TIMEOUT_MS);
-              downloadStore.createCreationTask(user, filter);
-              successCount++;
-            } catch (err: any) {
-              console.error(`获取用户 ${name} 失败:`, err);
-              failCount++;
-              if (err?.message?.includes('超时')) {
-                timeoutCount++;
-                notification.warning({
-                  message: `用户 ${name} 请求超时，已暂时跳过`,
-                  description: err.message,
-                });
-              } else if (isUserNotFoundError(err)) {
-                await removeUserFromList(name);
-                notification.warning({
-                  message: `用户 ${name} 不存在，已自动移除`,
-                });
-              } else {
-                notification.warning({
-                  message: `用户 ${name} 加载失败`,
-                  description: err?.message || '未知错误',
-                });
+            let userLoaded = false;
+            let lastError: any = null;
+
+            // 重试循环
+            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+              if (userLoaded) break;
+              try {
+                const user = await withTimeout(getUser(name), TIMEOUT_MS);
+                downloadStore.createCreationTask(user, filter);
+                userLoaded = true;
+                successCount++;
+              } catch (err: any) {
+                lastError = err;
+                console.error(`获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`, err);
+
+                // 如果是用户不存在（404/403），直接跳出重试循环，不再重试
+                if (isUserNotFoundError(err)) {
+                  await removeUserFromList(name);
+                  notification.warning({
+                    message: `用户 ${name} 不存在，已自动移除`,
+                  });
+                  failCount++;
+                  userLoaded = true; // 标记为已处理（失败）
+                  break;
+                }
+
+                // 如果是超时，等待后重试
+                if (err?.message?.includes('超时')) {
+                  if (attempt < MAX_RETRIES) {
+                    notification.warning({
+                      message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS/1000}秒后重试...`,
+                    });
+                    await delay(RETRY_DELAY_MS);
+                  } else {
+                    timeoutCount++;
+                    notification.warning({
+                      message: `用户 ${name} 请求超时，已跳过`,
+                      description: err.message,
+                    });
+                    failCount++;
+                  }
+                } else {
+                  // 其他错误
+                  if (attempt < MAX_RETRIES) {
+                    notification.warning({
+                      message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS/1000}秒后重试...`,
+                      description: err?.message || '未知错误',
+                    });
+                    await delay(RETRY_DELAY_MS);
+                  } else {
+                    notification.warning({
+                      message: `用户 ${name} 加载失败，已跳过`,
+                      description: err?.message || '未知错误',
+                    });
+                    failCount++;
+                  }
+                }
               }
             }
 
@@ -320,7 +355,7 @@ export const Homepage: React.FC = () => {
           })
         );
 
-        // 批次间等待，让 UI 有时间渲染
+        // 批次间等待
         if (i + BATCH_SIZE < usernames.length) {
           await delay(BATCH_DELAY_MS);
         }

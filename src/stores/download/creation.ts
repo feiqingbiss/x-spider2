@@ -20,19 +20,57 @@ const MAX_ADDITIONAL_DELAY_MS = 4000;
 const RATE_LIMIT_WAIT_MS = 30000;
 const PRE_CHECK_COUNT = 15;
 const EXIST_RATIO_THRESHOLD = 0.5;
-const UI_UPDATE_INTERVAL = 3; // 每处理完 N 个用户更新一次 UI
+const UI_UPDATE_INTERVAL = 5; // 每处理5个用户更新一次UI
+const RECENT_DAYS = 15; // 半个月
 
 // 中止控制器映射
 export const creationTaskAbortControllerMap = new Map<string, AbortController>();
 
-// 预检函数
+// 获取名单文件路径
+async function getListFilePath(): Promise<string> {
+  const saveDirBase = useSettingsStore.getState().download.saveDirBase || await path.appDataDir();
+  return await path.join(saveDirBase, 'search-user-name.txt');
+}
+
+// 从名单中移除用户（同步）
+async function removeUserFromList(username: string) {
+  try {
+    const filePath = await getListFilePath();
+    let content = '';
+    try {
+      content = await fs.readTextFile(filePath);
+    } catch (_) {}
+    const names = content
+      .split('\n')
+      .map((line) =>
+        line
+          .replace(/^https?:\/\/x\.com\/?/i, '')
+          .replace(/^@/, '')
+          .trim()
+      )
+      .filter((n) => n.length > 0 && n !== username);
+    const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
+    await fs.writeTextFile(filePath, newContent);
+    logFn('info', `已从名单移除用户: ${username}`);
+  } catch (err) {
+    logFn('error', `移除用户 ${username} 失败`, err);
+  }
+}
+
+// 预检函数：返回存在比例、媒体总数、是否有最近15天推文
 async function preCheckLocalExistence(
   user: TwitterUser,
-): Promise<{ existRatio: number; totalMediaCount: number }> {
+): Promise<{ existRatio: number; totalMediaCount: number; hasRecentPosts: boolean }> {
   perf.mark('preCheck-start');
   try {
     const { twitterPosts } = await getUserTweets(user.id, undefined, PRE_CHECK_COUNT);
-    if (!twitterPosts.length) return { existRatio: 0, totalMediaCount: 0 };
+    if (!twitterPosts.length) {
+      return { existRatio: 0, totalMediaCount: 0, hasRecentPosts: false };
+    }
+
+    // 检查是否有最近15天内的推文
+    const fifteenDaysAgo = dayjs().subtract(RECENT_DAYS, 'day');
+    const hasRecentPosts = twitterPosts.some(p => p.createdAt && p.createdAt.isAfter(fifteenDaysAgo));
 
     const settings = useSettingsStore.getState();
     let existCount = 0;
@@ -60,13 +98,13 @@ async function preCheckLocalExistence(
     }
 
     const existRatio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
-    logFn('info', `预检结果: 存在 ${existCount}/${totalMediaCount}, 比例 ${existRatio}`);
+    logFn('info', `预检结果: 存在 ${existCount}/${totalMediaCount}, 比例 ${existRatio}, 最近15天有推文: ${hasRecentPosts}`);
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
-    return { existRatio, totalMediaCount };
+    return { existRatio, totalMediaCount, hasRecentPosts };
   } catch (err) {
     logFn('error', '预检失败', err);
     perf.log('preCheck failed');
-    return { existRatio: 0, totalMediaCount: 0 };
+    return { existRatio: 0, totalMediaCount: 0, hasRecentPosts: false };
   }
 }
 
@@ -76,11 +114,21 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
   perf.mark(`runTask-${taskId}-start`);
 
   const { filter, user } = task;
+
+  // ----- 1. 预检 -----
   const preCheckResult = await preCheckLocalExistence(user);
+
+  // 判断是否应该跳过：如果存在比例 >= 阈值 且 有最近15天推文，且本地文件已覆盖最近推文，则可以跳过（但为了保险，除非用户明确要求，否则仍执行）
+  // 我们改为：如果存在比例很高且最近推文都在本地，则快速跳过。但为了数据完整性，我们仍执行，只是可能很快完成。
+  // 真正决定使用哪种源
   let useMediaSource = false;
-  if (preCheckResult.totalMediaCount > 0) {
+  if (preCheckResult.totalMediaCount > 0 && preCheckResult.hasRecentPosts) {
     useMediaSource = preCheckResult.existRatio >= EXIST_RATIO_THRESHOLD;
     logFn('info', `预检决定使用 ${useMediaSource ? '媒体' : '帖子'} 源 (比例=${preCheckResult.existRatio})`);
+  } else if (preCheckResult.totalMediaCount > 0 && !preCheckResult.hasRecentPosts) {
+    // 有媒体但没有最近15天的推文，使用帖子源（慢但完整）
+    useMediaSource = false;
+    logFn('info', `用户无最近15天推文，使用帖子源 (总媒体=${preCheckResult.totalMediaCount})`);
   } else {
     useMediaSource = false;
     logFn('info', '预检无媒体数据，使用帖子源');
@@ -93,16 +141,16 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
 
   let completeCount = 0,
     skipCount = 0;
-  let now = dayjs();
+  let currentTime = dayjs();
   const since = filter.dateRange?.[0] || dayjs.unix(0);
-  const until = filter.dateRange?.[1] || now.clone();
+  const until = filter.dateRange?.[1] || currentTime.clone();
   let nextCursor: string | undefined | null = undefined;
   let consecutiveSkippedPosts = 0,
     retriedInitialEmpty = false;
+  let processedUserCount = 0;
   let shouldUpdateUI = false;
-  let processedUserCount = 0; // 累计处理用户数，用于降低 UI 更新频率
 
-  while (nextCursor !== null && now.isAfter(since)) {
+  while (nextCursor !== null && currentTime.isAfter(since)) {
     if (abortSignal.aborted) break;
 
     const delayMs = MIN_API_INTERVAL_MS + Math.floor(Math.random() * MAX_ADDITIONAL_DELAY_MS);
@@ -133,12 +181,14 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
     const { twitterPosts, cursor } = resp;
     logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
 
+    // 处理首次为空
     if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
       logFn('warn', '首次获取为空，重试');
       await delay(2000);
       retriedInitialEmpty = true;
       const retry = await getListFn(user.id, undefined);
       if (retry.twitterPosts.length === 0) {
+        // 如果使用媒体源且无结果，尝试切换帖子源
         if (useMediaSource) {
           logFn('warn', `媒体源无结果，切换到帖子源重试`);
           const updatedTask: CreationTask = {
@@ -148,17 +198,26 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
           await runCreationTask(updatedTask, abortSignal);
           return;
         }
-        const errMsg = `用户 ${user.screenName} 无帖子`;
-        logFn('error', errMsg);
-        throw new Error(errMsg);
+        // 帖子源也无结果 -> 用户无帖子，从名单移除（但先检查是否有最近推文）
+        // 如果预检显示无媒体或无最近推文，则移除
+        if (preCheckResult.totalMediaCount === 0 || !preCheckResult.hasRecentPosts) {
+          logFn('error', `用户 ${user.screenName} 无有效帖子，从名单移除`);
+          await removeUserFromList(user.screenName);
+          throw new Error(`用户 ${user.screenName} 无帖子`);
+        } else {
+          // 有媒体但获取不到，可能是限制
+          logFn('warn', `用户 ${user.screenName} 有媒体但无法获取，可能受限，保留名单但跳过本次`);
+          // 不抛出错误，直接结束任务（无下载）
+          break;
+        }
       }
       nextCursor = retry.cursor;
-      now = R.last(retry.twitterPosts)?.createdAt || now;
+      currentTime = R.last(retry.twitterPosts)?.createdAt || currentTime;
       continue;
     }
 
     nextCursor = cursor;
-    now = R.last(twitterPosts)?.createdAt || now;
+    currentTime = R.last(twitterPosts)?.createdAt || currentTime;
     const filteredPosts = twitterPosts.filter(
       (p) =>
         p.medias?.length &&
@@ -168,7 +227,6 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
     skipCount += twitterPosts.length - filteredPosts.length;
 
     if (filteredPosts.length === 0) {
-      shouldUpdateUI = true;
       continue;
     }
 
@@ -196,8 +254,9 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
         consecutiveSkippedPosts++;
         if (consecutiveSkippedPosts >= 10) {
           logFn('info', '连续跳过帖子达到阈值，提前结束');
-          // 最终更新一次 UI
-          useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+          if (completeCount > 0 || skipCount > 0) {
+            useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+          }
           perf.measure(`runTask-${taskId}`, `runTask-${taskId}-start`, `runTask-${taskId}-end`);
           return;
         }
@@ -211,19 +270,21 @@ export async function runCreationTask(task: CreationTask, abortSignal: AbortSign
       await useDownloadStore.getState().batchCreateDownloadTask(paramsList);
       perf.measure(`batchCreate-${taskId}`, `batchCreate-${taskId}-start`, `batchCreate-${taskId}-end`);
       completeCount += paramsList.length;
+      processedUserCount++;
+      shouldUpdateUI = true;
     }
-    shouldUpdateUI = true;
-    processedUserCount++;
 
-    // 降低 UI 更新频率：每处理完 UI_UPDATE_INTERVAL 个用户或 shouldUpdateUI 为 true 时才更新
+    // 降低 UI 更新频率：每处理完 UI_UPDATE_INTERVAL 个用户才更新
     if (shouldUpdateUI && processedUserCount % UI_UPDATE_INTERVAL === 0) {
       useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
       shouldUpdateUI = false;
     }
   }
 
-  // 最终更新一次，确保进度准确
-  useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+  // 最终更新一次
+  if (completeCount > 0 || skipCount > 0) {
+    useDownloadStore.getState().updateCreationTask({ ...task, completeCount, skipCount });
+  }
 
   logFn('info', `用户 ${user.screenName} 完成: 下载 ${completeCount}, 跳过 ${skipCount}`);
   antNotification.success({
@@ -238,7 +299,6 @@ export async function scheduleCreationTasks() {
   const state = useDownloadStore.getState();
   const { creationTasks } = state;
 
-  // 移除队列长度检查，避免死锁
   const active = creationTasks.filter((t) => t.status === 'active').length;
   if (active >= MAX_ACTIVE_TASKS) {
     setTimeout(scheduleCreationTasks, 1000);
