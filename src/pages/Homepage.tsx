@@ -23,10 +23,10 @@ import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
 
 const TIMEOUT_MS = 30000;
-const BATCH_SIZE = 10;          // 每批处理用户数
-const BATCH_DELAY_MS = 1000;    // 批次间隔
-const MAX_RETRIES = 3;          // 每个用户最大重试次数
-const RETRY_DELAY_MS = 5000;    // 重试间隔
+const BATCH_SIZE = 10;
+const BATCH_DELAY_MS = 1000;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 5000;
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -288,7 +288,6 @@ export const Homepage: React.FC = () => {
             });
 
             let userLoaded = false;
-            let lastError: any = null;
 
             // 重试循环
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -299,7 +298,6 @@ export const Homepage: React.FC = () => {
                 userLoaded = true;
                 successCount++;
               } catch (err: any) {
-                lastError = err;
                 console.error(`获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`, err);
 
                 // 如果是用户不存在（404/403），直接跳出重试循环，不再重试
