@@ -131,8 +131,12 @@ export const Homepage: React.FC = () => {
     setUserListCount(names.length);
   }, [saveDirBase]);
 
+  // 延迟执行，避免阻塞首次渲染（解决切换页面卡死）
   useEffect(() => {
-    fetchUserListCount();
+    const timer = setTimeout(() => {
+      fetchUserListCount();
+    }, 200);
+    return () => clearTimeout(timer);
   }, [fetchUserListCount]);
 
   const handleRefresh = async () => {
@@ -307,7 +311,7 @@ export const Homepage: React.FC = () => {
                     message: `用户 ${name} 不存在，已自动移除`,
                   });
                   failCount++;
-                  userLoaded = true; // 标记为已处理（失败）
+                  userLoaded = true;
                   break;
                 }
 
