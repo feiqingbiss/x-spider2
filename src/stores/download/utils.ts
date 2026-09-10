@@ -91,10 +91,8 @@ export function writeDebugLog(message: string) {
   })();
 }
 
-// 只记录 WARN 和 ERROR，减少日志噪音
+// debug-dl.log：全级别记录；应用日志：DL 分类只记录 WARN/ERROR
 export function logFn(level: string, ...args: any[]) {
-  const isImportant = level === 'warn' || level === 'error';
-
   const msg = args
     .map((a) => {
       if (a instanceof Error) return `${a.name}: ${a.message}`;
@@ -109,30 +107,20 @@ export function logFn(level: string, ...args: any[]) {
     })
     .join(' ');
 
-  // 开发模式下 INFO 也输出到控制台，方便调试；生产环境完全忽略
-  if (!isImportant) {
-    if (import.meta.env.DEV) {
-      try {
-        if (window.log?.category) {
-          window.log.category('DL').info(msg);
-        }
-      } catch (_) {}
-    }
-    return;
-  }
-
-  // 1) 独立文件 debug-dl.log（只记录 WARN/ERROR）
+  // 1) debug-dl.log：记录所有级别（INFO/WARN/ERROR），本地时间格式
   writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
 
-  // 2) 应用日志 DL 分类
-  try {
-    if (window.log?.category) {
-      const l = window.log.category('DL');
-      if (level === 'error') l.error(msg);
-      else if (level === 'warn') l.warn(msg);
+  // 2) 应用日志 <日期>.log：DL 分类只写 WARN/ERROR，避免文件体积过大
+  if (level === 'warn' || level === 'error') {
+    try {
+      if (window.log?.category) {
+        const l = window.log.category('DL');
+        if (level === 'error') l.error(msg);
+        else l.warn(msg);
+      }
+    } catch (err) {
+      console.error('[DL] app log error:', err);
     }
-  } catch (err) {
-    console.error('[DL] app log error:', err);
   }
 }
 
