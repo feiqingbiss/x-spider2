@@ -128,8 +128,8 @@ async function preCheckLocalExistence(
   existRatio: number;
   totalMediaCount: number;
   hasRecentPosts: boolean;
-  firstPosts?: any;
-  firstCursor?: string | null;
+  firstPosts: any[];
+  firstCursor: string | null;
 }> {
   perf.mark('preCheck-start');
   try {
@@ -147,7 +147,7 @@ async function preCheckLocalExistence(
         totalMediaCount: 0,
         hasRecentPosts: false,
         firstPosts: [],
-        firstCursor: cursor,
+        firstCursor: cursor ?? null,
       };
     }
 
@@ -199,7 +199,7 @@ async function preCheckLocalExistence(
       totalMediaCount,
       hasRecentPosts,
       firstPosts: twitterPosts,
-      firstCursor: cursor,
+      firstCursor: cursor ?? null,
     };
   } catch (err: any) {
     const msg = err?.message || String(err);
@@ -208,7 +208,13 @@ async function preCheckLocalExistence(
     }
     logFn('error', '预检失败', err);
     perf.log('preCheck failed');
-    return { existRatio: 0, totalMediaCount: 0, hasRecentPosts: false };
+    return {
+      existRatio: 0,
+      totalMediaCount: 0,
+      hasRecentPosts: false,
+      firstPosts: [],
+      firstCursor: null,
+    };
   }
 }
 
@@ -261,14 +267,10 @@ export async function runCreationTask(
   let shouldUpdateUI = false;
 
   // 复用预检数据：如果预检用的源与最终选择一致，则第一次直接使用
-  let cachedPosts: any[] | undefined;
-  let cachedCursor: string | null | undefined;
+  let cachedPosts: any[] = [];
+  let cachedCursor: string | null = null;
   const preCheckSourceIsTweets = !useMediaSource; // 预检总是用帖子源
-  if (
-    preCheckSourceIsTweets &&
-    preCheckResult.firstPosts &&
-    preCheckResult.firstPosts.length > 0
-  ) {
+  if (preCheckSourceIsTweets && preCheckResult.firstPosts.length > 0) {
     cachedPosts = preCheckResult.firstPosts;
     cachedCursor = preCheckResult.firstCursor;
     logFn('info', `复用预检数据 ${cachedPosts.length} 条帖子`);
@@ -280,11 +282,11 @@ export async function runCreationTask(
     // ========== 等待 API 空闲槽位 ==========
     let resp;
     try {
-      if (cachedPosts) {
+      if (cachedPosts.length > 0) {
         // 使用预检缓存数据
-        resp = { twitterPosts: cachedPosts, cursor: cachedCursor ?? null };
-        cachedPosts = undefined;
-        cachedCursor = undefined;
+        resp = { twitterPosts: cachedPosts, cursor: cachedCursor };
+        cachedPosts = [];
+        cachedCursor = null;
       } else {
         await waitForApiSlot();
         perf.mark(`api-${taskId}-start`);
