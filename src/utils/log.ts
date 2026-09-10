@@ -59,7 +59,6 @@ export class Logger implements ILogger {
     try {
       const time = dayjs();
       this.#logConsole(level, time, category, ...messages);
-      // 默认始终写入文件（Settings.writeLogs 默认为 true 且无 UI 开关）
       this.#logFile(level, time, category, ...messages);
     } catch (err) {
       console.error('Log error', err);
@@ -67,7 +66,8 @@ export class Logger implements ILogger {
   }
 
   #logFile(level: string, time: Dayjs, category: string, ...messages: any[]) {
-    const fmtTime = time.toISOString();
+    // 使用本地时间格式：YYYY-MM-DD HH:mm:ss.SSS
+    const fmtTime = time.format('YYYY-MM-DD HH:mm:ss.SSS');
     const msg = `${fmtTime} [${level}] <${category}> ${messages
       .map((m) => {
         if (m instanceof Error) {
@@ -86,7 +86,6 @@ export class Logger implements ILogger {
       .join(' ')}`;
     this.#logFileBuffers.push(msg);
 
-    // 已有 flush 任务在等待，无需重复创建
     if (this.#logFileTimeoutId !== undefined) return;
 
     this.#logFileTimeoutId = window.setTimeout(async () => {

@@ -1,4 +1,5 @@
 import { fs, path } from '@tauri-apps/api';
+import dayjs from 'dayjs';
 import { AriaStatus } from '../../utils/aria2';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { CreateDownloadTaskParams } from './types';
@@ -15,7 +16,6 @@ let trimScheduled = false;
 
 async function ensureDebugLogPath(): Promise<string> {
   if (debugLogFilePath) return debugLogFilePath;
-  // 与 appLogDir 保持一致，便于排查（用户打开日志文件夹即可看到）
   const logDir = await path.appLogDir();
   if (!(await fs.exists(logDir))) {
     await fs.createDir(logDir, { recursive: true });
@@ -77,22 +77,24 @@ async function trimLogFile() {
   }
 }
 
-// 直接异步写入，不再使用队列，避免队列 reject 后后续日志全部丢失
+// 使用本地时间格式（YYYY-MM-DD HH:mm:ss.SSS）
 export function writeDebugLog(message: string) {
-  const timestamp = new Date().toISOString();
+  const timestamp = dayjs().format('YYYY-MM-DD HH:mm:ss.SSS');
   const line = `${timestamp} ${message}\n`;
   (async () => {
     try {
       const filePath = await ensureDebugLogPath();
       await fs.writeTextFile(filePath, line, { append: true });
     } catch (e) {
-      // 写入失败输出到 console，避免静默丢失
       console.error('[DL] writeDebugLog error:', e);
     }
   })();
 }
 
+// 只记录 WARN 和 ERROR，减少日志噪音
 export function logFn(level: string, ...args: any[]) {
+  const isImportant = level === 'warn' || level === 'error';
+
   const msg = args
     .map((a) => {
       if (a instanceof Error) return `${a.name}: ${a.message}`;
@@ -107,16 +109,27 @@ export function logFn(level: string, ...args: any[]) {
     })
     .join(' ');
 
-  // 1) 独立文件 debug-dl.log（专门给开发者排查下载流程用）
+  // 开发模式下 INFO 也输出到控制台，方便调试；生产环境完全忽略
+  if (!isImportant) {
+    if (import.meta.env.DEV) {
+      try {
+        if (window.log?.category) {
+          window.log.category('DL').info(msg);
+        }
+      } catch (_) {}
+    }
+    return;
+  }
+
+  // 1) 独立文件 debug-dl.log（只记录 WARN/ERROR）
   writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
 
-  // 2) 应用日志 DL 分类（也会写入 <YYYY-MM-DD HHmmss>.log）
+  // 2) 应用日志 DL 分类
   try {
     if (window.log?.category) {
       const l = window.log.category('DL');
       if (level === 'error') l.error(msg);
       else if (level === 'warn') l.warn(msg);
-      else l.info(msg);
     }
   } catch (err) {
     console.error('[DL] app log error:', err);
