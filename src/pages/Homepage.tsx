@@ -198,6 +198,8 @@ export const Homepage: React.FC = () => {
     }
     clearUser();
     clearMediaList();
+    // 让 React 有机会渲染中间状态，确保旧组件卸载
+    await delay(100);
     try {
       await loadUser(cleanedSn);
       addSearchHistory(cleanedSn);
@@ -555,7 +557,7 @@ export const Homepage: React.FC = () => {
       {/* 图墙 - 增加 key 强制重新挂载 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
-          <PostListGridView key={userInfo.data.screenName} />
+          <PostListGridView key={userInfo.data.id} />
         </section>
       )}
 

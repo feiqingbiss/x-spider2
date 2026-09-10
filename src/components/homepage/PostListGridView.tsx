@@ -3,7 +3,7 @@ import { LoadingOutlined } from '@ant-design/icons';
 import { App } from 'antd';
 import dayjs from 'dayjs';
 import * as R from 'ramda';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import MediaType from '../../enums/MediaType';
 import { TwitterMedia } from '../../interfaces/TwitterMedia';
 import { TwitterPost } from '../../interfaces/TwitterPost';
@@ -19,9 +19,24 @@ export const PostListGridView: React.FC = () => {
     postList: state.postList,
     userInfo: state.userInfo,
   }));
+  const loadPostList = useHomepageStore((s) => s.loadPostList);
   const createDownloadTask = useDownloadStore(
     (state) => state.createDownloadTask,
   );
+
+  // 监听用户变化，主动触发重新加载
+  const userId = userInfo.data?.id;
+  const prevUserIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (userId && userId !== prevUserIdRef.current) {
+      prevUserIdRef.current = userId;
+      // 直接调用 loadPostList 强制刷新
+      loadPostList().catch((err) => {
+        console.error('加载图片列表失败', err);
+      });
+    }
+  }, [userId, loadPostList]);
 
   const mediaList = useMemo<(TwitterMedia & { postId: string })[]>(
     () =>
