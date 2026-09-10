@@ -198,8 +198,6 @@ export const Homepage: React.FC = () => {
     }
     clearUser();
     clearMediaList();
-    // 让 React 有机会渲染中间状态，确保旧组件卸载
-    await delay(100);
     try {
       await loadUser(cleanedSn);
       addSearchHistory(cleanedSn);

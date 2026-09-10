@@ -33,15 +33,16 @@ export interface HomepageStore {
   loadMorePostList: () => Promise<void>;
 }
 
-let loadPostListAbortController = new AbortController();
-let loadUserAbortController = new AbortController();
+// 使用 request id 保证只有最新的请求生效
+let loadPostListRequestId = 0;
+let loadUserRequestId = 0;
 
 export const useHomepageStore = create<HomepageStore>((set, get) => ({
   keyword: '',
   setKeyword: (kw: string) => set({ keyword: kw }),
   filter: {
     mediaTypes: [MediaType.Photo, MediaType.Video, MediaType.Gif],
-    source: 'medias', // 默认使用媒体源
+    source: 'medias',
   },
   setFilter: (filter) => set({ filter }),
 
@@ -50,20 +51,27 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     data: undefined,
   },
   loadUser: async (screenName: string) => {
+    const requestId = ++loadUserRequestId;
+
+    // 清空当前用户和列表，避免显示旧数据
     set({
       userInfo: {
         data: undefined,
         loading: true,
       },
+      postList: {
+        cursor: null,
+        list: undefined,
+        loading: false,
+      },
     });
-
-    loadUserAbortController.abort();
-    loadUserAbortController = new AbortController();
+    // 使正在进行的 postList 请求失效
+    loadPostListRequestId++;
 
     try {
       const value = await getUser(screenName);
 
-      if (loadUserAbortController.signal.aborted) {
+      if (requestId !== loadUserRequestId) {
         return;
       }
 
@@ -74,6 +82,9 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         },
       });
     } catch (err: any) {
+      if (requestId !== loadUserRequestId) {
+        return;
+      }
       set({
         userInfo: {
           data: undefined,
@@ -97,6 +108,8 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     cursor: null,
   },
   clearPostList: () => {
+    // 使正在进行的请求失效
+    loadPostListRequestId++;
     set({
       postList: {
         cursor: null,
@@ -106,8 +119,7 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     });
   },
   loadPostList: async () => {
-    loadPostListAbortController.abort();
-    loadPostListAbortController = new AbortController();
+    const requestId = ++loadPostListRequestId;
     const state = get();
     const userInfo = state.userInfo.data;
 
@@ -126,7 +138,8 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     try {
       const { cursor, twitterPosts } = await getUserMedias(userInfo.id);
 
-      if (loadPostListAbortController.signal.aborted) {
+      // 丢弃过期请求
+      if (requestId !== loadPostListRequestId) {
         return;
       }
 
@@ -138,6 +151,9 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         },
       });
     } catch (err: any) {
+      if (requestId !== loadPostListRequestId) {
+        return;
+      }
       log.error('Failed to load post list', err);
       set({
         postList: {
@@ -167,14 +183,14 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
       throw new Error('未加载用户信息');
     }
 
+    // 记录当前 requestId，加载更多时不递增
+    const currentRequestId = loadPostListRequestId;
+
     set(
       produce(state, (draft) => {
         draft.postList.loading = true;
       }),
     );
-
-    loadPostListAbortController.abort();
-    loadPostListAbortController = new AbortController();
 
     try {
       const { twitterPosts, cursor } = await getUserMedias(
@@ -182,7 +198,8 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         postList.cursor,
       );
 
-      if (loadPostListAbortController.signal.aborted) {
+      // 如果加载过程中用户切换了，丢弃结果
+      if (currentRequestId !== loadPostListRequestId) {
         return;
       }
 
@@ -194,6 +211,9 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         },
       });
     } catch (err: any) {
+      if (currentRequestId !== loadPostListRequestId) {
+        return;
+      }
       set(
         produce(state, (draft) => {
           draft.postList.loading = false;

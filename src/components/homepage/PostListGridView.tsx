@@ -3,7 +3,7 @@ import { LoadingOutlined } from '@ant-design/icons';
 import { App } from 'antd';
 import dayjs from 'dayjs';
 import * as R from 'ramda';
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import MediaType from '../../enums/MediaType';
 import { TwitterMedia } from '../../interfaces/TwitterMedia';
 import { TwitterPost } from '../../interfaces/TwitterPost';
@@ -24,14 +24,11 @@ export const PostListGridView: React.FC = () => {
     (state) => state.createDownloadTask,
   );
 
-  // 监听用户变化，主动触发重新加载
   const userId = userInfo.data?.id;
-  const prevUserIdRef = useRef<string | undefined>(undefined);
 
+  // 监听用户变化，主动触发重新加载
   useEffect(() => {
-    if (userId && userId !== prevUserIdRef.current) {
-      prevUserIdRef.current = userId;
-      // 直接调用 loadPostList 强制刷新
+    if (userId) {
       loadPostList().catch((err) => {
         console.error('加载图片列表失败', err);
       });
