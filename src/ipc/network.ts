@@ -5,10 +5,21 @@ import * as R from 'ramda';
 import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
 
-const MAX_RETRY_COUNT = 16;
-const MAX_RETRY_DELAY = 16000;
+// 减少重试次数，避免限流时内部无限重试
+const MAX_RETRY_COUNT = 4;
+const MAX_RETRY_DELAY = 4000;
 
 let log: ICategoriedLogger;
+
+function isRateLimitError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (
+    m.includes('status=429') ||
+    m.includes('too many requests') ||
+    m.includes('rate limit') ||
+    m.includes('expected value at line 1 column 1')
+  );
+}
 
 export async function request(options: RequestOptions) {
   if (!log) {
@@ -40,6 +51,14 @@ export async function request(options: RequestOptions) {
       );
     } catch (err: any) {
       lastErr = err;
+      const errMsg = err?.message || String(err);
+
+      // 遇到限流立即抛出，不进行内部重试（交给上层限流器处理）
+      if (isRateLimitError(errMsg)) {
+        log.warn(`Rate limit detected, aborting internal retries: ${errMsg}`);
+        throw err;
+      }
+
       log.warn(
         `Request failed, retry after ${retryDelay}ms, remaining retry count: ${remainingRetryCount}`,
         err,

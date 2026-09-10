@@ -22,11 +22,11 @@ import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
 
-const TIMEOUT_MS = 30000;
-const BATCH_SIZE = 10;
-const BATCH_DELAY_MS = 1000;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 5000;
+const TIMEOUT_MS = 60000;       // 从 30 秒增加到 60 秒
+const BATCH_SIZE = 2;           // 从 10 降到 2，大幅降低并发
+const BATCH_DELAY_MS = 2500;    // 从 1000ms 增加到 2500ms
+const MAX_RETRIES = 3;          // 每个用户最大重试次数
+const RETRY_DELAY_MS = 8000;    // 重试间隔从 5 秒增加到 8 秒
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -64,6 +64,16 @@ const isUserNotFoundError = (err: any): boolean => {
     msg.includes('status=404') ||
     msg.includes('status=400') ||
     msg.includes('status=403')
+  );
+};
+
+// 判断错误是否为限流
+const isRateLimitError = (err: any): boolean => {
+  const msg = (err?.message || err?.toString() || '').toLowerCase();
+  return (
+    msg.includes('status=429') ||
+    msg.includes('too many requests') ||
+    msg.includes('rate limit')
   );
 };
 
@@ -131,7 +141,6 @@ export const Homepage: React.FC = () => {
     setUserListCount(names.length);
   }, [saveDirBase]);
 
-  // 延迟执行，避免阻塞首次渲染（解决切换页面卡死）
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchUserListCount();
@@ -230,7 +239,7 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 一键批量下载（分批执行，含重试）
+  // 一键批量下载（降低并发 + 加长超时 + 加长重试间隔）
   const batchDownload = async () => {
     if (isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
@@ -276,9 +285,13 @@ export const Homepage: React.FC = () => {
       let successCount = 0;
       let failCount = 0;
       let timeoutCount = 0;
+      let rateLimitCount = 0;
 
       for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
-        const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
+        const batch = usernames.slice(
+          i,
+          Math.min(i + BATCH_SIZE, usernames.length),
+        );
 
         await Promise.all(
           batch.map(async (name) => {
@@ -299,8 +312,12 @@ export const Homepage: React.FC = () => {
                 userLoaded = true;
                 successCount++;
               } catch (err: any) {
-                console.error(`获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`, err);
+                console.error(
+                  `获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`,
+                  err,
+                );
 
+                // 用户不存在 → 移除
                 if (isUserNotFoundError(err)) {
                   await removeUserFromList(name);
                   notification.warning({
@@ -311,10 +328,22 @@ export const Homepage: React.FC = () => {
                   break;
                 }
 
+                // 限流 → 等待更久
+                if (isRateLimitError(err)) {
+                  rateLimitCount++;
+                  const waitMs = RETRY_DELAY_MS * attempt * 2;
+                  notification.warning({
+                    message: `用户 ${name} 触发限流，等待 ${waitMs / 1000} 秒...`,
+                  });
+                  await delay(waitMs);
+                  continue;
+                }
+
+                // 超时
                 if (err?.message?.includes('超时')) {
                   if (attempt < MAX_RETRIES) {
                     notification.warning({
-                      message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS/1000}秒后重试...`,
+                      message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
                     });
                     await delay(RETRY_DELAY_MS);
                   } else {
@@ -326,9 +355,10 @@ export const Homepage: React.FC = () => {
                     failCount++;
                   }
                 } else {
+                  // 其他错误
                   if (attempt < MAX_RETRIES) {
                     notification.warning({
-                      message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS/1000}秒后重试...`,
+                      message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
                       description: err?.message || '未知错误',
                     });
                     await delay(RETRY_DELAY_MS);
@@ -348,7 +378,7 @@ export const Homepage: React.FC = () => {
               completed: index + 1,
               currentUser: name,
             });
-          })
+          }),
         );
 
         if (i + BATCH_SIZE < usernames.length) {
@@ -360,7 +390,10 @@ export const Homepage: React.FC = () => {
 
       setBatchProgress(null);
       setIsBatchRunning(false);
-      const extraMsg = timeoutCount > 0 ? `，超时跳过 ${timeoutCount} 个` : '';
+      const extras: string[] = [];
+      if (timeoutCount > 0) extras.push(`超时 ${timeoutCount} 个`);
+      if (rateLimitCount > 0) extras.push(`限流重试 ${rateLimitCount} 次`);
+      const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
       message.success(
         `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}${extraMsg}`,
       );
@@ -552,10 +585,10 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 图墙 - 增加 key 强制重新挂载 */}
+      {/* 图墙 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
-          <PostListGridView key={userInfo.data.id} />
+          <PostListGridView />
         </section>
       )}
 
