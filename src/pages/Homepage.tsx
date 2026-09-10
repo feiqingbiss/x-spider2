@@ -263,7 +263,6 @@ export const Homepage: React.FC = () => {
         return;
       }
 
-      // 随机打乱
       usernames = shuffleArray(usernames);
 
       setIsBatchRunning(true);
@@ -278,7 +277,6 @@ export const Homepage: React.FC = () => {
       let failCount = 0;
       let timeoutCount = 0;
 
-      // 分批处理
       for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
         const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
 
@@ -293,7 +291,6 @@ export const Homepage: React.FC = () => {
 
             let userLoaded = false;
 
-            // 重试循环
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
               if (userLoaded) break;
               try {
@@ -304,7 +301,6 @@ export const Homepage: React.FC = () => {
               } catch (err: any) {
                 console.error(`获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`, err);
 
-                // 如果是用户不存在（404/403），直接跳出重试循环，不再重试
                 if (isUserNotFoundError(err)) {
                   await removeUserFromList(name);
                   notification.warning({
@@ -315,7 +311,6 @@ export const Homepage: React.FC = () => {
                   break;
                 }
 
-                // 如果是超时，等待后重试
                 if (err?.message?.includes('超时')) {
                   if (attempt < MAX_RETRIES) {
                     notification.warning({
@@ -331,7 +326,6 @@ export const Homepage: React.FC = () => {
                     failCount++;
                   }
                 } else {
-                  // 其他错误
                   if (attempt < MAX_RETRIES) {
                     notification.warning({
                       message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS/1000}秒后重试...`,
@@ -357,7 +351,6 @@ export const Homepage: React.FC = () => {
           })
         );
 
-        // 批次间等待
         if (i + BATCH_SIZE < usernames.length) {
           await delay(BATCH_DELAY_MS);
         }
@@ -559,10 +552,10 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 图墙 */}
+      {/* 图墙 - 增加 key 强制重新挂载 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
-          <PostListGridView />
+          <PostListGridView key={userInfo.data.screenName} />
         </section>
       )}
 
