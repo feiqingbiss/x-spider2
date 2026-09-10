@@ -9,18 +9,18 @@ import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
 
 // ================= 日志系统 =================
 const MAX_LOG_FILE_SIZE = 150 * 1024;
-const TRIM_INTERVAL_MS = 30000; // 每 30 秒检查一次
+const TRIM_INTERVAL_MS = 30000;
 let debugLogFilePath: string | null = null;
 let trimScheduled = false;
 
 async function ensureDebugLogPath(): Promise<string> {
   if (debugLogFilePath) return debugLogFilePath;
-  const dataDir = await path.appDataDir();
-  const dir = await path.join(dataDir, 'logs');
-  if (!(await fs.exists(dir))) {
-    await fs.createDir(dir, { recursive: true });
+  // 与 appLogDir 保持一致，便于排查（用户打开日志文件夹即可看到）
+  const logDir = await path.appLogDir();
+  if (!(await fs.exists(logDir))) {
+    await fs.createDir(logDir, { recursive: true });
   }
-  debugLogFilePath = await path.join(dir, 'debug-dl.log');
+  debugLogFilePath = await path.join(logDir, 'debug-dl.log');
   return debugLogFilePath;
 }
 
@@ -77,39 +77,53 @@ async function trimLogFile() {
   }
 }
 
-// 串行写入队列，避免并发丢失
-let logWriteQueue: Promise<void> = Promise.resolve();
-
-export async function writeDebugLog(message: string) {
-  logWriteQueue = logWriteQueue.then(async () => {
+// 直接异步写入，不再使用队列，避免队列 reject 后后续日志全部丢失
+export function writeDebugLog(message: string) {
+  const timestamp = new Date().toISOString();
+  const line = `${timestamp} ${message}\n`;
+  (async () => {
     try {
       const filePath = await ensureDebugLogPath();
-      const timestamp = new Date().toISOString();
-      const line = `${timestamp} ${message}\n`;
       await fs.writeTextFile(filePath, line, { append: true });
     } catch (e) {
-      // ignore
+      // 写入失败输出到 console，避免静默丢失
+      console.error('[DL] writeDebugLog error:', e);
     }
-  });
-  return logWriteQueue;
+  })();
 }
 
 export function logFn(level: string, ...args: any[]) {
   const msg = args
-    .map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a)))
+    .map((a) => {
+      if (a instanceof Error) return `${a.name}: ${a.message}`;
+      if (typeof a === 'object') {
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      }
+      return String(a);
+    })
     .join(' ');
+
+  // 1) 独立文件 debug-dl.log（专门给开发者排查下载流程用）
   writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
+
+  // 2) 应用日志 DL 分类（也会写入 <YYYY-MM-DD HHmmss>.log）
   try {
     if (window.log?.category) {
       const l = window.log.category('DL');
-      if (level === 'error') l.error(...args);
-      else if (level === 'warn') l.warn(...args);
-      else l.info(...args);
+      if (level === 'error') l.error(msg);
+      else if (level === 'warn') l.warn(msg);
+      else l.info(msg);
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error('[DL] app log error:', err);
+  }
 }
 
-// 定期 trim（每 30 秒一次，避免并发）
+// 定期 trim
 if (typeof window !== 'undefined') {
   setInterval(() => {
     trimLogFile().catch(() => {});

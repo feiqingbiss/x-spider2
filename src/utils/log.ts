@@ -2,9 +2,9 @@
 
 import dayjs, { Dayjs } from 'dayjs';
 import { path, fs } from '@tauri-apps/api';
-import { useSettingsStore } from '../stores/settings';
 
 const DEFAULT_CATEGORY = 'APP';
+const FLUSH_INTERVAL_MS = 500;
 
 export class Logger implements ILogger {
   #now = dayjs();
@@ -49,7 +49,7 @@ export class Logger implements ILogger {
     const logDir = await path.appLogDir();
 
     if (!(await fs.exists(logDir))) {
-      await fs.createDir(logDir);
+      await fs.createDir(logDir, { recursive: true });
     }
 
     return await path.join(logDir, fileName);
@@ -59,10 +59,8 @@ export class Logger implements ILogger {
     try {
       const time = dayjs();
       this.#logConsole(level, time, category, ...messages);
-
-      if (useSettingsStore.getState().app.writeLogs) {
-        this.#logFile(level, time, category, ...messages);
-      }
+      // 默认始终写入文件（Settings.writeLogs 默认为 true 且无 UI 开关）
+      this.#logFile(level, time, category, ...messages);
     } catch (err) {
       console.error('Log error', err);
     }
@@ -79,22 +77,33 @@ export class Logger implements ILogger {
             name: m.name,
           });
         }
-        return JSON.stringify(m);
+        try {
+          return JSON.stringify(m);
+        } catch {
+          return JSON.stringify(String(m));
+        }
       })
       .join(' ')}`;
     this.#logFileBuffers.push(msg);
-    clearTimeout(this.#logFileTimeoutId);
 
-    this.#logFileTimeoutId = setTimeout(async () => {
-      await fs.writeTextFile(
-        await this.#getLogFilePath(),
-        this.#logFileBuffers.join('\n') + '\n',
-        {
-          append: true,
-        },
-      );
+    // 已有 flush 任务在等待，无需重复创建
+    if (this.#logFileTimeoutId !== undefined) return;
+
+    this.#logFileTimeoutId = window.setTimeout(async () => {
+      this.#logFileTimeoutId = undefined;
+      const buffers = this.#logFileBuffers.slice();
       this.#logFileBuffers.length = 0;
-    }, 500);
+      if (buffers.length === 0) return;
+      try {
+        await fs.writeTextFile(
+          await this.#getLogFilePath(),
+          buffers.join('\n') + '\n',
+          { append: true },
+        );
+      } catch (err) {
+        console.error('Log file write error', err);
+      }
+    }, FLUSH_INTERVAL_MS);
   }
 
   #logConsole(
@@ -120,7 +129,6 @@ export class Logger implements ILogger {
         '#722ed1',
         '#eb2f96',
       ];
-      // Hash category name
       const hashedCategoryName = category
         .split('')
         .reduce((prev, curr) => prev + curr.charCodeAt(0), 0);
