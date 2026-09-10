@@ -18,37 +18,33 @@ import { CreateDownloadTaskParams } from './types';
 const MAX_ACTIVE_TASKS = 1;
 const PRE_CHECK_COUNT = 15;
 const EXIST_RATIO_THRESHOLD = 0.5;
-const UI_UPDATE_INTERVAL = 5; // 每处理5个用户更新一次UI
-const RECENT_DAYS = 15; // 半个月
+const UI_UPDATE_INTERVAL = 5;
+const RECENT_DAYS = 15;
 
 // ===================== API 限流器（全局） =====================
-const MIN_API_INTERVAL_MS = 3500;      // 请求最小间隔（原 2000ms）
-const MAX_JITTER_MS = 4000;             // 随机抖动上限
-const BASE_RATE_LIMIT_WAIT_MS = 60000;  // 首次限流等待 60s
-const MAX_COOLDOWN_MS = 5 * 60 * 1000;  // 最长冷却 5 分钟
+const MIN_API_INTERVAL_MS = 3500;
+const MAX_JITTER_MS = 4000;
+const BASE_RATE_LIMIT_WAIT_MS = 60000;
+const MAX_COOLDOWN_MS = 5 * 60 * 1000;
+const EMPTY_RETRY_WAIT_MS = 30000; // 首次获取为空后等待 30 秒再重试
 
-let globalCooldownUntil = 0;   // 全局冷却截止时间
-let lastApiCallTime = 0;       // 上次 API 调用时间
-let rateLimitStreak = 0;       // 连续限流次数
+let globalCooldownUntil = 0;
+let lastApiCallTime = 0;
+let rateLimitStreak = 0;
 
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
-
-  // 1. 如果处于全局冷却期，先等待
   if (now < globalCooldownUntil) {
     const waitMs = globalCooldownUntil - now;
     logFn('warn', `[限流] 全局冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒...`);
     await delay(waitMs);
   }
-
-  // 2. 保证与上一次 API 调用的最小间隔 + 随机抖动
   const sinceLast = Date.now() - lastApiCallTime;
   const needWait = MIN_API_INTERVAL_MS - sinceLast;
   if (needWait > 0) {
     const jitter = Math.floor(Math.random() * MAX_JITTER_MS);
     await delay(needWait + jitter);
   }
-
   lastApiCallTime = Date.now();
 }
 
@@ -72,13 +68,15 @@ function isRateLimitError(msg: string): boolean {
 
 function recordRateLimit(): void {
   rateLimitStreak = Math.min(rateLimitStreak + 1, 5);
-  // 指数退避：60s → 120s → 240s → 300s（上限）
   const cooldown = Math.min(
     BASE_RATE_LIMIT_WAIT_MS * Math.pow(2, rateLimitStreak - 1),
     MAX_COOLDOWN_MS,
   );
   setGlobalCooldown(cooldown);
-  logFn('warn', `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`);
+  logFn(
+    'warn',
+    `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`,
+  );
 }
 
 function recordSuccess(): void {
@@ -121,16 +119,19 @@ async function removeUserFromList(username: string) {
   }
 }
 
-// 预检函数（带限流保护）
-async function preCheckLocalExistence(
-  user: TwitterUser,
-): Promise<{
+// 预检返回结构：新增 success 字段区分"成功获取"和"请求失败"
+interface PreCheckResult {
+  success: boolean;         // 请求是否成功（与是否有帖子无关）
   existRatio: number;
   totalMediaCount: number;
   hasRecentPosts: boolean;
   firstPosts: any[];
   firstCursor: string | null;
-}> {
+}
+
+async function preCheckLocalExistence(
+  user: TwitterUser,
+): Promise<PreCheckResult> {
   perf.mark('preCheck-start');
   try {
     await waitForApiSlot();
@@ -141,8 +142,11 @@ async function preCheckLocalExistence(
     );
     recordSuccess();
 
+    // 请求成功即视为 success，即使帖子为空
     if (!twitterPosts.length) {
+      logFn('info', `预检成功但无帖子 (用户 ${user.screenName})`);
       return {
+        success: true,
         existRatio: 0,
         totalMediaCount: 0,
         hasRecentPosts: false,
@@ -195,6 +199,7 @@ async function preCheckLocalExistence(
     );
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
     return {
+      success: true,
       existRatio,
       totalMediaCount,
       hasRecentPosts,
@@ -206,9 +211,11 @@ async function preCheckLocalExistence(
     if (isRateLimitError(msg)) {
       recordRateLimit();
     }
-    logFn('error', '预检失败', err);
+    logFn('error', `预检失败 (用户 ${user.screenName})`, err);
     perf.log('preCheck failed');
+    // 请求失败 → success = false，不用于判定用户是否存在
     return {
+      success: false,
       existRatio: 0,
       totalMediaCount: 0,
       hasRecentPosts: false,
@@ -228,7 +235,7 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  // ----- 1. 预检（复用预检数据，避免重复请求） -----
+  // ----- 1. 预检 -----
   const preCheckResult = await preCheckLocalExistence(user);
 
   let useMediaSource = false;
@@ -238,7 +245,10 @@ export async function runCreationTask(
       'info',
       `预检决定使用 ${useMediaSource ? '媒体' : '帖子'} 源 (比例=${preCheckResult.existRatio})`,
     );
-  } else if (preCheckResult.totalMediaCount > 0 && !preCheckResult.hasRecentPosts) {
+  } else if (
+    preCheckResult.totalMediaCount > 0 &&
+    !preCheckResult.hasRecentPosts
+  ) {
     useMediaSource = false;
     logFn(
       'info',
@@ -266,10 +276,10 @@ export async function runCreationTask(
   let processedUserCount = 0;
   let shouldUpdateUI = false;
 
-  // 复用预检数据：如果预检用的源与最终选择一致，则第一次直接使用
+  // 复用预检数据
   let cachedPosts: any[] = [];
   let cachedCursor: string | null = null;
-  const preCheckSourceIsTweets = !useMediaSource; // 预检总是用帖子源
+  const preCheckSourceIsTweets = !useMediaSource;
   if (preCheckSourceIsTweets && preCheckResult.firstPosts.length > 0) {
     cachedPosts = preCheckResult.firstPosts;
     cachedCursor = preCheckResult.firstCursor;
@@ -279,11 +289,9 @@ export async function runCreationTask(
   while (nextCursor !== null && currentTime.isAfter(since)) {
     if (abortSignal.aborted) break;
 
-    // ========== 等待 API 空闲槽位 ==========
     let resp;
     try {
       if (cachedPosts.length > 0) {
-        // 使用预检缓存数据
         resp = { twitterPosts: cachedPosts, cursor: cachedCursor };
         cachedPosts = [];
         cachedCursor = null;
@@ -291,7 +299,11 @@ export async function runCreationTask(
         await waitForApiSlot();
         perf.mark(`api-${taskId}-start`);
         resp = await getListFn(user.id, nextCursor);
-        perf.measure(`api-${taskId}`, `api-${taskId}-start`, `api-${taskId}-end`);
+        perf.measure(
+          `api-${taskId}`,
+          `api-${taskId}-start`,
+          `api-${taskId}-end`,
+        );
         recordSuccess();
       }
     } catch (apiErr: any) {
@@ -301,13 +313,12 @@ export async function runCreationTask(
       perf.log(`API failed: ${errMsg}`);
 
       if (isRateLimitError(errMsg)) {
-        // 记录限流，设置全局冷却，然后重试
         recordRateLimit();
         antNotification.warning({
           message: '检测到 API 限流',
           description: `将全局冷却后自动重试`,
         });
-        continue; // 重试当前请求
+        continue;
       }
       throw apiErr;
     }
@@ -316,16 +327,21 @@ export async function runCreationTask(
     const { twitterPosts, cursor } = resp;
     logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
 
-    // 首次为空时重试
+    // ---- 首次为空时重试：等待更长时间，且不再轻易移除用户 ----
     if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
-      logFn('warn', '首次获取为空，重试');
-      await delay(2000);
+      logFn(
+        'warn',
+        `首次获取为空，等待 ${EMPTY_RETRY_WAIT_MS / 1000} 秒后重试`,
+      );
+      await delay(EMPTY_RETRY_WAIT_MS);
       retriedInitialEmpty = true;
       try {
         await waitForApiSlot();
         const retry = await getListFn(user.id, undefined);
         recordSuccess();
+
         if (retry.twitterPosts.length === 0) {
+          // 若用媒体源且无结果，先尝试帖子源
           if (useMediaSource) {
             logFn('warn', `媒体源无结果，切换到帖子源重试`);
             const updatedTask: CreationTask = {
@@ -335,21 +351,33 @@ export async function runCreationTask(
             await runCreationTask(updatedTask, abortSignal);
             return;
           }
-          if (
-            preCheckResult.totalMediaCount === 0 ||
-            !preCheckResult.hasRecentPosts
-          ) {
-            logFn('error', `用户 ${user.screenName} 无有效帖子，从名单移除`);
-            await removeUserFromList(user.screenName);
-            throw new Error(`用户 ${user.screenName} 无帖子`);
-          } else {
+
+          // 帖子源也为空：根据预检结果判断
+          if (!preCheckResult.success) {
+            // 预检本身失败（限流/网络）→ 不判定，跳过本次
             logFn(
               'warn',
-              `用户 ${user.screenName} 有媒体但无法获取，可能受限，保留名单但跳过本次`,
+              `用户 ${user.screenName} 预检失败（可能限流），跳过本次任务，保留用户`,
             );
             break;
           }
+          if (preCheckResult.firstPosts.length === 0) {
+            // 预检成功且也无帖子 → 确认用户无帖子
+            logFn(
+              'error',
+              `用户 ${user.screenName} 预检与重试均确认无帖子，从名单移除`,
+            );
+            await removeUserFromList(user.screenName);
+            throw new Error(`用户 ${user.screenName} 无帖子`);
+          }
+          // 预检有帖子但实际抓取为空 → 暂时性问题，跳过
+          logFn(
+            'warn',
+            `用户 ${user.screenName} 有帖子但暂时无法获取，跳过本次，保留用户`,
+          );
+          break;
         }
+
         nextCursor = retry.cursor;
         currentTime = R.last(retry.twitterPosts)?.createdAt || currentTime;
         continue;
@@ -467,7 +495,6 @@ export async function scheduleCreationTasks() {
   const state = useDownloadStore.getState();
   const { creationTasks } = state;
 
-  // 如果处于全局冷却期，等待冷却结束后再调度
   if (Date.now() < globalCooldownUntil) {
     const waitMs = globalCooldownUntil - Date.now() + 500;
     setTimeout(scheduleCreationTasks, Math.min(waitMs, 30000));
@@ -500,7 +527,6 @@ export async function scheduleCreationTasks() {
   } finally {
     state.removeCreationTask(nextTask.id);
   }
-  // 任务间隔拉长到 2 秒，进一步降低请求频率
   setTimeout(scheduleCreationTasks, 2000);
 }
 
