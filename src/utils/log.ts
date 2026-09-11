@@ -5,6 +5,8 @@ import { path, fs } from '@tauri-apps/api';
 
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
+// 只写入文件的日志级别（INFO/DEBUG 仅控制台）
+const FILE_LOG_LEVELS = new Set(['WARN', 'ERROR']);
 
 export class Logger implements ILogger {
   #now = dayjs();
@@ -59,14 +61,16 @@ export class Logger implements ILogger {
     try {
       const time = dayjs();
       this.#logConsole(level, time, category, ...messages);
-      this.#logFile(level, time, category, ...messages);
+      // 只有 WARN/ERROR 才写入文件，避免日志体积爆炸
+      if (FILE_LOG_LEVELS.has(level)) {
+        this.#logFile(level, time, category, ...messages);
+      }
     } catch (err) {
       console.error('Log error', err);
     }
   }
 
   #logFile(level: string, time: Dayjs, category: string, ...messages: any[]) {
-    // 使用本地时间格式：YYYY-MM-DD HH:mm:ss.SSS
     const fmtTime = time.format('YYYY-MM-DD HH:mm:ss.SSS');
     const msg = `${fmtTime} [${level}] <${category}> ${messages
       .map((m) => {

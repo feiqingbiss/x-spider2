@@ -22,15 +22,18 @@ const UI_UPDATE_INTERVAL = 5;
 const RECENT_DAYS = 15;
 
 // ===================== API 限流器（全局） =====================
-const MIN_API_INTERVAL_MS = 3500;
-const MAX_JITTER_MS = 4000;
-const BASE_RATE_LIMIT_WAIT_MS = 60000;
-const MAX_COOLDOWN_MS = 5 * 60 * 1000;
-const EMPTY_RETRY_WAIT_MS = 30000; // 首次获取为空后等待 30 秒再重试
+const MIN_API_INTERVAL_MS = 5000;        // 请求最小间隔（提高到 5 秒）
+const MAX_JITTER_MS = 3000;               // 随机抖动上限
+const BASE_RATE_LIMIT_WAIT_MS = 60000;    // 首次限流等待 60s
+const MAX_COOLDOWN_MS = 10 * 60 * 1000;   // 最长冷却 10 分钟
+const EMPTY_RETRY_WAIT_MS = 30000;        // 首次为空后等待 30 秒
+const SUCCESS_THRESHOLD = 3;              // 连续成功 N 次才重置限流计数
+const WARMUP_COOLDOWN_MS = 30000;         // 恢复后温启动冷却 30 秒
 
 let globalCooldownUntil = 0;
 let lastApiCallTime = 0;
 let rateLimitStreak = 0;
+let successStreak = 0; // 连续成功次数
 
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
@@ -67,7 +70,8 @@ function isRateLimitError(msg: string): boolean {
 }
 
 function recordRateLimit(): void {
-  rateLimitStreak = Math.min(rateLimitStreak + 1, 5);
+  rateLimitStreak = Math.min(rateLimitStreak + 1, 6);
+  successStreak = 0; // 重置成功计数
   const cooldown = Math.min(
     BASE_RATE_LIMIT_WAIT_MS * Math.pow(2, rateLimitStreak - 1),
     MAX_COOLDOWN_MS,
@@ -80,9 +84,14 @@ function recordRateLimit(): void {
 }
 
 function recordSuccess(): void {
-  if (rateLimitStreak > 0) {
-    logFn('info', `[限流] API 恢复正常，重置限流计数`);
+  successStreak++;
+  // 需要连续成功 SUCCESS_THRESHOLD 次才重置限流计数
+  if (successStreak >= SUCCESS_THRESHOLD && rateLimitStreak > 0) {
+    logFn('info', `[限流] 连续成功 ${successStreak} 次，重置限流计数`);
     rateLimitStreak = 0;
+    successStreak = 0;
+    // 温启动：恢复后设置 30 秒冷却，避免立刻再次触发限流
+    setGlobalCooldown(WARMUP_COOLDOWN_MS);
   }
 }
 
@@ -119,9 +128,8 @@ async function removeUserFromList(username: string) {
   }
 }
 
-// 预检返回结构：新增 success 字段区分"成功获取"和"请求失败"
 interface PreCheckResult {
-  success: boolean;         // 请求是否成功（与是否有帖子无关）
+  success: boolean;
   existRatio: number;
   totalMediaCount: number;
   hasRecentPosts: boolean;
@@ -142,7 +150,6 @@ async function preCheckLocalExistence(
     );
     recordSuccess();
 
-    // 请求成功即视为 success，即使帖子为空
     if (!twitterPosts.length) {
       logFn('info', `预检成功但无帖子 (用户 ${user.screenName})`);
       return {
@@ -213,7 +220,6 @@ async function preCheckLocalExistence(
     }
     logFn('error', `预检失败 (用户 ${user.screenName})`, err);
     perf.log('preCheck failed');
-    // 请求失败 → success = false，不用于判定用户是否存在
     return {
       success: false,
       existRatio: 0,
@@ -235,7 +241,6 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  // ----- 1. 预检 -----
   const preCheckResult = await preCheckLocalExistence(user);
 
   let useMediaSource = false;
@@ -276,7 +281,6 @@ export async function runCreationTask(
   let processedUserCount = 0;
   let shouldUpdateUI = false;
 
-  // 复用预检数据
   let cachedPosts: any[] = [];
   let cachedCursor: string | null = null;
   const preCheckSourceIsTweets = !useMediaSource;
@@ -327,7 +331,6 @@ export async function runCreationTask(
     const { twitterPosts, cursor } = resp;
     logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
 
-    // ---- 首次为空时重试：等待更长时间，且不再轻易移除用户 ----
     if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
       logFn(
         'warn',
@@ -341,7 +344,6 @@ export async function runCreationTask(
         recordSuccess();
 
         if (retry.twitterPosts.length === 0) {
-          // 若用媒体源且无结果，先尝试帖子源
           if (useMediaSource) {
             logFn('warn', `媒体源无结果，切换到帖子源重试`);
             const updatedTask: CreationTask = {
@@ -352,9 +354,7 @@ export async function runCreationTask(
             return;
           }
 
-          // 帖子源也为空：根据预检结果判断
           if (!preCheckResult.success) {
-            // 预检本身失败（限流/网络）→ 不判定，跳过本次
             logFn(
               'warn',
               `用户 ${user.screenName} 预检失败（可能限流），跳过本次任务，保留用户`,
@@ -362,7 +362,6 @@ export async function runCreationTask(
             break;
           }
           if (preCheckResult.firstPosts.length === 0) {
-            // 预检成功且也无帖子 → 确认用户无帖子
             logFn(
               'error',
               `用户 ${user.screenName} 预检与重试均确认无帖子，从名单移除`,
@@ -370,7 +369,6 @@ export async function runCreationTask(
             await removeUserFromList(user.screenName);
             throw new Error(`用户 ${user.screenName} 无帖子`);
           }
-          // 预检有帖子但实际抓取为空 → 暂时性问题，跳过
           logFn(
             'warn',
             `用户 ${user.screenName} 有帖子但暂时无法获取，跳过本次，保留用户`,
