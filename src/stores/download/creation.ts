@@ -22,18 +22,18 @@ const UI_UPDATE_INTERVAL = 5;
 const RECENT_DAYS = 15;
 
 // ===================== API 限流器（全局） =====================
-const MIN_API_INTERVAL_MS = 5000;        // 请求最小间隔（提高到 5 秒）
-const MAX_JITTER_MS = 3000;               // 随机抖动上限
-const BASE_RATE_LIMIT_WAIT_MS = 60000;    // 首次限流等待 60s
-const MAX_COOLDOWN_MS = 10 * 60 * 1000;   // 最长冷却 10 分钟
-const EMPTY_RETRY_WAIT_MS = 30000;        // 首次为空后等待 30 秒
-const SUCCESS_THRESHOLD = 3;              // 连续成功 N 次才重置限流计数
-const WARMUP_COOLDOWN_MS = 30000;         // 恢复后温启动冷却 30 秒
+const MIN_API_INTERVAL_MS = 5000;
+const MAX_JITTER_MS = 3000;
+const BASE_RATE_LIMIT_WAIT_MS = 60000;
+const MAX_COOLDOWN_MS = 10 * 60 * 1000;
+const EMPTY_RETRY_WAIT_MS = 30000;
+const SUCCESS_THRESHOLD = 3;
+const WARMUP_COOLDOWN_MS = 30000;
 
 let globalCooldownUntil = 0;
 let lastApiCallTime = 0;
 let rateLimitStreak = 0;
-let successStreak = 0; // 连续成功次数
+let successStreak = 0;
 
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
@@ -71,7 +71,7 @@ function isRateLimitError(msg: string): boolean {
 
 function recordRateLimit(): void {
   rateLimitStreak = Math.min(rateLimitStreak + 1, 6);
-  successStreak = 0; // 重置成功计数
+  successStreak = 0;
   const cooldown = Math.min(
     BASE_RATE_LIMIT_WAIT_MS * Math.pow(2, rateLimitStreak - 1),
     MAX_COOLDOWN_MS,
@@ -85,48 +85,16 @@ function recordRateLimit(): void {
 
 function recordSuccess(): void {
   successStreak++;
-  // 需要连续成功 SUCCESS_THRESHOLD 次才重置限流计数
   if (successStreak >= SUCCESS_THRESHOLD && rateLimitStreak > 0) {
     logFn('info', `[限流] 连续成功 ${successStreak} 次，重置限流计数`);
     rateLimitStreak = 0;
     successStreak = 0;
-    // 温启动：恢复后设置 30 秒冷却，避免立刻再次触发限流
     setGlobalCooldown(WARMUP_COOLDOWN_MS);
   }
 }
 
 // ===================== 辅助函数 =====================
 export const creationTaskAbortControllerMap = new Map<string, AbortController>();
-
-async function getListFilePath(): Promise<string> {
-  const saveDirBase =
-    useSettingsStore.getState().download.saveDirBase || (await path.appDataDir());
-  return await path.join(saveDirBase, 'search-user-name.txt');
-}
-
-async function removeUserFromList(username: string) {
-  try {
-    const filePath = await getListFilePath();
-    let content = '';
-    try {
-      content = await fs.readTextFile(filePath);
-    } catch (_) {}
-    const names = content
-      .split('\n')
-      .map((line) =>
-        line
-          .replace(/^https?:\/\/x\.com\/?/i, '')
-          .replace(/^@/, '')
-          .trim(),
-      )
-      .filter((n) => n.length > 0 && n !== username);
-    const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
-    await fs.writeTextFile(filePath, newContent);
-    logFn('info', `已从名单移除用户: ${username}`);
-  } catch (err) {
-    logFn('error', `移除用户 ${username} 失败`, err);
-  }
-}
 
 interface PreCheckResult {
   success: boolean;
@@ -354,25 +322,23 @@ export async function runCreationTask(
             return;
           }
 
+          // 不再移除用户，仅记录日志并跳过
           if (!preCheckResult.success) {
             logFn(
               'warn',
               `用户 ${user.screenName} 预检失败（可能限流），跳过本次任务，保留用户`,
             );
-            break;
-          }
-          if (preCheckResult.firstPosts.length === 0) {
+          } else if (preCheckResult.firstPosts.length === 0) {
             logFn(
-              'error',
-              `用户 ${user.screenName} 预检与重试均确认无帖子，从名单移除`,
+              'warn',
+              `用户 ${user.screenName} 预检与重试均无帖子，暂时跳过（保留在名单中）`,
             );
-            await removeUserFromList(user.screenName);
-            throw new Error(`用户 ${user.screenName} 无帖子`);
+          } else {
+            logFn(
+              'warn',
+              `用户 ${user.screenName} 有帖子但暂时无法获取，跳过本次，保留用户`,
+            );
           }
-          logFn(
-            'warn',
-            `用户 ${user.screenName} 有帖子但暂时无法获取，跳过本次，保留用户`,
-          );
           break;
         }
 

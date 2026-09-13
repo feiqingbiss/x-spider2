@@ -22,11 +22,13 @@ import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
 
-const TIMEOUT_MS = 60000;       // 从 30 秒增加到 60 秒
-const BATCH_SIZE = 2;           // 从 10 降到 2，大幅降低并发
-const BATCH_DELAY_MS = 2500;    // 从 1000ms 增加到 2500ms
-const MAX_RETRIES = 3;          // 每个用户最大重试次数
-const RETRY_DELAY_MS = 8000;    // 重试间隔从 5 秒增加到 8 秒
+const TIMEOUT_MS = 60000;
+const BATCH_SIZE = 2;
+const BATCH_DELAY_MS = 2500;
+const MAX_RETRIES = 3;           // 单个用户内重试次数
+const RETRY_DELAY_MS = 8000;     // 单次重试间隔
+const ROUND_DELAY_MS = 30000;    // 轮次间隔（全部跑完后的重试轮次）
+const RETRY_ROUNDS = 2;          // 失败后整体重试的轮数
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -56,18 +58,7 @@ const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => 
   });
 };
 
-// 判断错误是否为“用户不存在”
-const isUserNotFoundError = (err: any): boolean => {
-  const msg = (err?.message || err?.toString() || '').toLowerCase();
-  return (
-    msg.includes('找不到该用户') ||
-    msg.includes('status=404') ||
-    msg.includes('status=400') ||
-    msg.includes('status=403')
-  );
-};
-
-// 判断错误是否为限流
+// 限流判断
 const isRateLimitError = (err: any): boolean => {
   const msg = (err?.message || err?.toString() || '').toLowerCase();
   return (
@@ -153,34 +144,6 @@ export const Homepage: React.FC = () => {
     message.success('列表已刷新（搜索历史不变）');
   };
 
-  const updateInvalidFolders = async () => {
-    if (!saveDirBase) return;
-    try {
-      if (!(await fs.exists(saveDirBase))) return;
-
-      const entries = await fs.readDir(saveDirBase);
-      const folderNames = entries
-        .filter((entry) => entry.children !== undefined)
-        .map((entry) => entry.name)
-        .filter((name): name is string => !!name && name !== 'undefined');
-
-      const uniqueFolders = Array.from(new Set(folderNames));
-      if (uniqueFolders.length === 0) return;
-
-      const listUsernames = await readUsernamesFromFile();
-      const usernameSet = new Set(listUsernames);
-
-      const invalidFolders = uniqueFolders.filter(
-        (folder) => !usernameSet.has(folder),
-      );
-
-      const outputPath = await path.join(saveDirBase, 'invalid_folders.txt');
-      await fs.writeTextFile(outputPath, invalidFolders.join('\n'));
-    } catch (err) {
-      console.error('更新 invalid_folders.txt 失败', err);
-    }
-  };
-
   const cleanUsername = (input: string): string => {
     let text = input.trim();
     if (!text) return '';
@@ -215,31 +178,105 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  const removeUserFromList = async (username: string) => {
-    try {
-      const filePath = await getListFilePath();
-      let content = '';
+  // 处理单个用户：返回 true 表示成功，false 表示失败
+  const processOneUser = async (
+    name: string,
+    successCounter: { count: number },
+    timeoutCounter: { count: number },
+  ): Promise<boolean> => {
+    const downloadStore = useDownloadStore.getState();
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        content = await fs.readTextFile(filePath);
-      } catch (e) {}
-      const names = content
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0 && n !== username);
-      const newContent = names.map((u) => `https://x.com/${u}`).join('\n');
-      await fs.writeTextFile(filePath, newContent);
-      await fetchUserListCount();
-    } catch (err) {
-      console.error('移除用户失败:', err);
+        const user = await withTimeout(getUser(name), TIMEOUT_MS);
+        downloadStore.createCreationTask(user, filter);
+        successCounter.count++;
+        return true;
+      } catch (err: any) {
+        console.error(
+          `获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`,
+          err,
+        );
+
+        // 限流 → 等待更久
+        if (isRateLimitError(err)) {
+          const waitMs = RETRY_DELAY_MS * attempt * 2;
+          notification.warning({
+            message: `用户 ${name} 触发限流，等待 ${Math.round(waitMs / 1000)} 秒...`,
+          });
+          await delay(waitMs);
+          continue;
+        }
+
+        // 超时
+        if (err?.message?.includes('超时')) {
+          if (attempt < MAX_RETRIES) {
+            notification.warning({
+              message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
+            });
+            await delay(RETRY_DELAY_MS);
+          } else {
+            timeoutCounter.count++;
+          }
+        } else {
+          // 其他错误
+          if (attempt < MAX_RETRIES) {
+            notification.warning({
+              message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
+              description: err?.message || '未知错误',
+            });
+            await delay(RETRY_DELAY_MS);
+          }
+        }
+      }
     }
+    return false;
   };
 
-  // 一键批量下载（降低并发 + 加长超时 + 加长重试间隔）
+  // 处理一批用户，返回失败列表
+  const processBatch = async (
+    usernames: string[],
+    successCounter: { count: number },
+    timeoutCounter: { count: number },
+    progressBase: number,
+    progressTotal: number,
+  ): Promise<string[]> => {
+    const failed: string[] = [];
+
+    for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
+      const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
+
+      await Promise.all(
+        batch.map(async (name) => {
+          const index = i + batch.indexOf(name);
+          setBatchProgress({
+            total: progressTotal,
+            completed: progressBase + index,
+            currentUser: name,
+          });
+
+          const ok = await processOneUser(name, successCounter, timeoutCounter);
+          if (!ok) {
+            failed.push(name);
+          }
+
+          setBatchProgress({
+            total: progressTotal,
+            completed: progressBase + index + 1,
+            currentUser: name,
+          });
+        }),
+      );
+
+      if (i + BATCH_SIZE < usernames.length) {
+        await delay(BATCH_DELAY_MS);
+      }
+    }
+
+    return failed;
+  };
+
+  // 一键批量下载（含多轮重试）
   const batchDownload = async () => {
     if (isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
@@ -275,134 +312,76 @@ export const Homepage: React.FC = () => {
       usernames = shuffleArray(usernames);
 
       setIsBatchRunning(true);
+      const total = usernames.length;
       setBatchProgress({
-        total: usernames.length,
+        total,
         completed: 0,
         currentUser: '',
       });
 
-      const downloadStore = useDownloadStore.getState();
-      let successCount = 0;
-      let failCount = 0;
-      let timeoutCount = 0;
-      let rateLimitCount = 0;
+      const successCounter = { count: 0 };
+      const timeoutCounter = { count: 0 };
 
-      for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
-        const batch = usernames.slice(
-          i,
-          Math.min(i + BATCH_SIZE, usernames.length),
+      // 第 1 轮
+      let pending = await processBatch(
+        usernames,
+        successCounter,
+        timeoutCounter,
+        0,
+        total,
+      );
+
+      // 后续重试轮
+      for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
+        message.info(
+          `第 ${round} 轮重试，剩余 ${pending.length} 个用户（${ROUND_DELAY_MS / 1000}秒后开始）`,
         );
+        await delay(ROUND_DELAY_MS);
 
-        await Promise.all(
-          batch.map(async (name) => {
-            const index = usernames.indexOf(name);
-            setBatchProgress({
-              total: usernames.length,
-              completed: index,
-              currentUser: name,
-            });
+        setBatchProgress({
+          total,
+          completed: total - pending.length,
+          currentUser: `重试第 ${round} 轮`,
+        });
 
-            let userLoaded = false;
-
-            for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-              if (userLoaded) break;
-              try {
-                const user = await withTimeout(getUser(name), TIMEOUT_MS);
-                downloadStore.createCreationTask(user, filter);
-                userLoaded = true;
-                successCount++;
-              } catch (err: any) {
-                console.error(
-                  `获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`,
-                  err,
-                );
-
-                // 用户不存在 → 移除
-                if (isUserNotFoundError(err)) {
-                  await removeUserFromList(name);
-                  notification.warning({
-                    message: `用户 ${name} 不存在，已自动移除`,
-                  });
-                  failCount++;
-                  userLoaded = true;
-                  break;
-                }
-
-                // 限流 → 等待更久
-                if (isRateLimitError(err)) {
-                  rateLimitCount++;
-                  const waitMs = RETRY_DELAY_MS * attempt * 2;
-                  notification.warning({
-                    message: `用户 ${name} 触发限流，等待 ${waitMs / 1000} 秒...`,
-                  });
-                  await delay(waitMs);
-                  continue;
-                }
-
-                // 超时
-                if (err?.message?.includes('超时')) {
-                  if (attempt < MAX_RETRIES) {
-                    notification.warning({
-                      message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
-                    });
-                    await delay(RETRY_DELAY_MS);
-                  } else {
-                    timeoutCount++;
-                    notification.warning({
-                      message: `用户 ${name} 请求超时，已跳过`,
-                      description: err.message,
-                    });
-                    failCount++;
-                  }
-                } else {
-                  // 其他错误
-                  if (attempt < MAX_RETRIES) {
-                    notification.warning({
-                      message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
-                      description: err?.message || '未知错误',
-                    });
-                    await delay(RETRY_DELAY_MS);
-                  } else {
-                    notification.warning({
-                      message: `用户 ${name} 加载失败，已跳过`,
-                      description: err?.message || '未知错误',
-                    });
-                    failCount++;
-                  }
-                }
-              }
-            }
-
-            setBatchProgress({
-              total: usernames.length,
-              completed: index + 1,
-              currentUser: name,
-            });
-          }),
+        const stillFailed = await processBatch(
+          pending,
+          successCounter,
+          timeoutCounter,
+          total - pending.length,
+          total,
         );
-
-        if (i + BATCH_SIZE < usernames.length) {
-          await delay(BATCH_DELAY_MS);
-        }
+        pending = stillFailed;
       }
 
-      await updateInvalidFolders();
-
+      // 结束
       setBatchProgress(null);
       setIsBatchRunning(false);
+      await fetchUserListCount();
+
       const extras: string[] = [];
-      if (timeoutCount > 0) extras.push(`超时 ${timeoutCount} 个`);
-      if (rateLimitCount > 0) extras.push(`限流重试 ${rateLimitCount} 次`);
+      if (timeoutCounter.count > 0) extras.push(`超时 ${timeoutCounter.count} 个`);
+      if (pending.length > 0) {
+        extras.push(`重试后仍失败 ${pending.length} 个`);
+      }
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
-      message.success(
-        `批量下载任务创建完成：成功 ${successCount}，失败 ${failCount}${extraMsg}`,
-      );
+
+      if (pending.length > 0) {
+        // 仅提示，不移除
+        message.warning(
+          `批量下载完成：成功 ${successCounter.count}，失败 ${pending.length}${extraMsg}。失败用户保留在名单中，可稍后再次尝试。`,
+        );
+        console.warn('最终失败的用户（保留在名单中）:', pending);
+      } else {
+        message.success(
+          `批量下载任务创建完成：成功 ${successCounter.count}${extraMsg}`,
+        );
+      }
     } catch (err) {
       console.error('批量下载出错:', err);
       setBatchProgress(null);
       setIsBatchRunning(false);
       message.error('批量下载发生未知错误');
-      await updateInvalidFolders().catch(() => {});
     }
   };
 
