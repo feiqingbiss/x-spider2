@@ -5,8 +5,8 @@ import { path, fs } from '@tauri-apps/api';
 
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
-// 只写入文件的日志级别（INFO/DEBUG 仅控制台）
-const FILE_LOG_LEVELS = new Set(['WARN', 'ERROR']);
+// 仅 DL 分类：只写 WARN/ERROR；其他分类（APP/ARIA/NET）全部写入
+const DL_FILE_LOG_LEVELS = new Set(['WARN', 'ERROR']);
 
 export class Logger implements ILogger {
   #now = dayjs();
@@ -61,8 +61,14 @@ export class Logger implements ILogger {
     try {
       const time = dayjs();
       this.#logConsole(level, time, category, ...messages);
-      // 只有 WARN/ERROR 才写入文件，避免日志体积爆炸
-      if (FILE_LOG_LEVELS.has(level)) {
+
+      // DL 分类只写 WARN/ERROR，避免日志洪水；其他分类全部写入
+      const shouldWrite =
+        category === 'DL'
+          ? DL_FILE_LOG_LEVELS.has(level)
+          : true;
+
+      if (shouldWrite) {
         this.#logFile(level, time, category, ...messages);
       }
     } catch (err) {

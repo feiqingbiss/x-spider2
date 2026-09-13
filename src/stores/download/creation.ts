@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
-import { getUserMedias, getUserTweets } from '../../twitter/api';
+import { getUserMedias } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
 import { useDownloadStore } from './store';
 import { prepareDownloadTask, logFn } from './utils';
@@ -16,10 +16,8 @@ import { CreateDownloadTaskParams } from './types';
 
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
-const PRE_CHECK_COUNT = 15;
-const EXIST_RATIO_THRESHOLD = 0.5;
+const PRE_CHECK_COUNT = 20;            // 预检获取第一页帖子数（与主页一致）
 const UI_UPDATE_INTERVAL = 5;
-const RECENT_DAYS = 15;
 
 // ===================== API 限流器（全局） =====================
 const MIN_API_INTERVAL_MS = 5000;
@@ -98,20 +96,20 @@ export const creationTaskAbortControllerMap = new Map<string, AbortController>()
 
 interface PreCheckResult {
   success: boolean;
-  existRatio: number;
+  existCount: number;
   totalMediaCount: number;
-  hasRecentPosts: boolean;
+  allExist: boolean;      // 第一页是否全部已下载
+  latestDate: dayjs.Dayjs | null;
   firstPosts: any[];
   firstCursor: string | null;
 }
 
-async function preCheckLocalExistence(
-  user: TwitterUser,
-): Promise<PreCheckResult> {
+// 预检：使用【媒体源】与主页保持一致
+async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
   perf.mark('preCheck-start');
   try {
     await waitForApiSlot();
-    const { twitterPosts, cursor } = await getUserTweets(
+    const { twitterPosts, cursor } = await getUserMedias(
       user.id,
       undefined,
       PRE_CHECK_COUNT,
@@ -119,28 +117,31 @@ async function preCheckLocalExistence(
     recordSuccess();
 
     if (!twitterPosts.length) {
-      logFn('info', `预检成功但无帖子 (用户 ${user.screenName})`);
+      logFn('info', `预检（媒体源）: 用户 ${user.screenName} 无媒体`);
       return {
         success: true,
-        existRatio: 0,
+        existCount: 0,
         totalMediaCount: 0,
-        hasRecentPosts: false,
+        allExist: false,
+        latestDate: null,
         firstPosts: [],
         firstCursor: cursor ?? null,
       };
     }
 
-    const fifteenDaysAgo = dayjs().subtract(RECENT_DAYS, 'day');
-    const hasRecentPosts = twitterPosts.some(
-      (p) => p.createdAt && p.createdAt.isAfter(fifteenDaysAgo),
-    );
-
     const settings = useSettingsStore.getState();
     let existCount = 0;
     let totalMediaCount = 0;
+    let latestDate: dayjs.Dayjs | null = null;
 
     for (const post of twitterPosts) {
       if (!post.medias?.length) continue;
+      // 记录最新日期
+      if (post.createdAt) {
+        if (!latestDate || post.createdAt.isAfter(latestDate)) {
+          latestDate = post.createdAt;
+        }
+      }
       for (const media of post.medias) {
         totalMediaCount++;
         try {
@@ -166,18 +167,18 @@ async function preCheckLocalExistence(
       }
     }
 
-    const existRatio =
-      totalMediaCount > 0 ? existCount / totalMediaCount : 0;
+    const allExist = totalMediaCount > 0 && existCount === totalMediaCount;
     logFn(
       'info',
-      `预检结果: 存在 ${existCount}/${totalMediaCount}, 比例 ${existRatio}, 最近15天有推文: ${hasRecentPosts}`,
+      `预检（媒体源）: 存在 ${existCount}/${totalMediaCount}, 全部已下载: ${allExist}, 最新日期: ${latestDate?.format('YYYY-MM-DD') || '无'}`,
     );
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
     return {
       success: true,
-      existRatio,
+      existCount,
       totalMediaCount,
-      hasRecentPosts,
+      allExist,
+      latestDate,
       firstPosts: twitterPosts,
       firstCursor: cursor ?? null,
     };
@@ -190,9 +191,10 @@ async function preCheckLocalExistence(
     perf.log('preCheck failed');
     return {
       success: false,
-      existRatio: 0,
+      existCount: 0,
       totalMediaCount: 0,
-      hasRecentPosts: false,
+      allExist: false,
+      latestDate: null,
       firstPosts: [],
       firstCursor: null,
     };
@@ -209,172 +211,126 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  const preCheckResult = await preCheckLocalExistence(user);
+  // 预检（媒体源）
+  const preCheckResult = await preCheckWithMedias(user);
 
-  let useMediaSource = false;
-  if (preCheckResult.totalMediaCount > 0 && preCheckResult.hasRecentPosts) {
-    useMediaSource = preCheckResult.existRatio >= EXIST_RATIO_THRESHOLD;
+  // ---- 决策：跳过 / 全量索引 ----
+  if (!preCheckResult.success) {
     logFn(
-      'info',
-      `预检决定使用 ${useMediaSource ? '媒体' : '帖子'} 源 (比例=${preCheckResult.existRatio})`,
+      'warn',
+      `用户 ${user.screenName} 预检失败（可能限流），本次跳过，保留用户`,
     );
-  } else if (
-    preCheckResult.totalMediaCount > 0 &&
-    !preCheckResult.hasRecentPosts
-  ) {
-    useMediaSource = false;
-    logFn(
-      'info',
-      `用户无最近15天推文，使用帖子源 (总媒体=${preCheckResult.totalMediaCount})`,
-    );
-  } else {
-    useMediaSource = false;
-    logFn('info', '预检无媒体数据，使用帖子源');
+    return;
   }
 
-  const getListFn = useMediaSource ? getUserMedias : getUserTweets;
+  if (preCheckResult.totalMediaCount === 0) {
+    logFn('info', `用户 ${user.screenName} 无媒体，跳过`);
+    return;
+  }
+
+  if (preCheckResult.allExist) {
+    logFn(
+      'info',
+      `用户 ${user.screenName} 第一页 ${preCheckResult.totalMediaCount} 个媒体已全部下载，跳过`,
+    );
+    return;
+  }
+
   logFn(
     'info',
-    `开始处理用户: ${user.screenName} (源: ${useMediaSource ? '媒体' : '帖子'})`,
+    `用户 ${user.screenName} 存在未下载媒体（${preCheckResult.existCount}/${preCheckResult.totalMediaCount}），进入全量索引`,
   );
 
+  // ---- 全量索引：从第一页开始，一直翻页到 cursor 为空 ----
   let completeCount = 0;
   let skipCount = 0;
-  let currentTime = dayjs();
+  let currentTime = preCheckResult.latestDate || dayjs();
   const since = filter.dateRange?.[0] || dayjs.unix(0);
-  const until = filter.dateRange?.[1] || currentTime.clone();
-  let nextCursor: string | undefined | null = undefined;
-  let consecutiveSkippedPosts = 0;
-  let retriedInitialEmpty = false;
+  const until = filter.dateRange?.[1] || dayjs();
   let processedUserCount = 0;
   let shouldUpdateUI = false;
 
-  let cachedPosts: any[] = [];
-  let cachedCursor: string | null = null;
-  const preCheckSourceIsTweets = !useMediaSource;
-  if (preCheckSourceIsTweets && preCheckResult.firstPosts.length > 0) {
-    cachedPosts = preCheckResult.firstPosts;
-    cachedCursor = preCheckResult.firstCursor;
-    logFn('info', `复用预检数据 ${cachedPosts.length} 条帖子`);
-  }
+  let currentPosts = preCheckResult.firstPosts;
+  let nextCursor: string | null | undefined = preCheckResult.firstCursor;
+  let isFirstPage = true;
 
-  while (nextCursor !== null && currentTime.isAfter(since)) {
+  // 循环处理每一页
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
     if (abortSignal.aborted) break;
 
-    let resp;
-    try {
-      if (cachedPosts.length > 0) {
-        resp = { twitterPosts: cachedPosts, cursor: cachedCursor };
-        cachedPosts = [];
-        cachedCursor = null;
-      } else {
+    if (!isFirstPage) {
+      // 非第一页需要请求 API
+      if (!nextCursor) break;
+      if (currentTime.isBefore(since)) {
+        logFn(
+          'info',
+          `已到达时间范围起点 ${since.format('YYYY-MM-DD')}，停止翻页`,
+        );
+        break;
+      }
+      try {
         await waitForApiSlot();
         perf.mark(`api-${taskId}-start`);
-        resp = await getListFn(user.id, nextCursor);
+        const resp = await getUserMedias(user.id, nextCursor);
         perf.measure(
           `api-${taskId}`,
           `api-${taskId}-start`,
           `api-${taskId}-end`,
         );
         recordSuccess();
-      }
-    } catch (apiErr: any) {
-      const errMsg =
-        typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
-      logFn('error', `API请求失败: ${errMsg}`);
-      perf.log(`API failed: ${errMsg}`);
+        currentPosts = resp.twitterPosts;
+        nextCursor = resp.cursor;
+      } catch (apiErr: any) {
+        const errMsg =
+          typeof apiErr?.message === 'string'
+            ? apiErr.message
+            : String(apiErr);
+        logFn('error', `API请求失败: ${errMsg}`);
+        perf.log(`API failed: ${errMsg}`);
 
-      if (isRateLimitError(errMsg)) {
-        recordRateLimit();
-        antNotification.warning({
-          message: '检测到 API 限流',
-          description: `将全局冷却后自动重试`,
-        });
-        continue;
-      }
-      throw apiErr;
-    }
-
-    if (abortSignal.aborted) break;
-    const { twitterPosts, cursor } = resp;
-    logFn('info', `获得 ${twitterPosts.length} 条帖子, cursor=${cursor}`);
-
-    if (!nextCursor && twitterPosts.length === 0 && !retriedInitialEmpty) {
-      logFn(
-        'warn',
-        `首次获取为空，等待 ${EMPTY_RETRY_WAIT_MS / 1000} 秒后重试`,
-      );
-      await delay(EMPTY_RETRY_WAIT_MS);
-      retriedInitialEmpty = true;
-      try {
-        await waitForApiSlot();
-        const retry = await getListFn(user.id, undefined);
-        recordSuccess();
-
-        if (retry.twitterPosts.length === 0) {
-          // 媒体源无结果时切换到帖子源（不再依赖 filter.source）
-          if (useMediaSource) {
-            logFn('warn', `媒体源无结果，切换到帖子源重试`);
-            const updatedTask: CreationTask = {
-              ...task,
-              filter: { ...filter },
-            };
-            await runCreationTask(updatedTask, abortSignal);
-            return;
-          }
-
-          // 不再移除用户，仅记录日志并跳过
-          if (!preCheckResult.success) {
-            logFn(
-              'warn',
-              `用户 ${user.screenName} 预检失败（可能限流），跳过本次任务，保留用户`,
-            );
-          } else if (preCheckResult.firstPosts.length === 0) {
-            logFn(
-              'warn',
-              `用户 ${user.screenName} 预检与重试均无帖子，暂时跳过（保留在名单中）`,
-            );
-          } else {
-            logFn(
-              'warn',
-              `用户 ${user.screenName} 有帖子但暂时无法获取，跳过本次，保留用户`,
-            );
-          }
-          break;
-        }
-
-        nextCursor = retry.cursor;
-        currentTime = R.last(retry.twitterPosts)?.createdAt || currentTime;
-        continue;
-      } catch (retryErr: any) {
-        const msg = retryErr?.message || String(retryErr);
-        if (isRateLimitError(msg)) {
+        if (isRateLimitError(errMsg)) {
           recordRateLimit();
+          antNotification.warning({
+            message: '检测到 API 限流',
+            description: `将全局冷却后自动重试`,
+          });
           continue;
         }
-        throw retryErr;
+        throw apiErr;
       }
     }
+    isFirstPage = false;
 
-    nextCursor = cursor;
-    currentTime = R.last(twitterPosts)?.createdAt || currentTime;
-
-    const filteredPosts = twitterPosts.filter(
-      (p: any) =>
-        p.medias?.length &&
-        (!since || !p.createdAt || p.createdAt.isAfter(since)) &&
-        (!until || !p.createdAt || p.createdAt.isBefore(until)),
+    logFn(
+      'info',
+      `处理第 ${processedUserCount + 1} 页, 帖子数=${currentPosts.length}, cursor=${nextCursor ? '有' : '无'}`,
     );
-    skipCount += twitterPosts.length - filteredPosts.length;
 
-    if (filteredPosts.length === 0) {
+    if (!currentPosts.length) {
+      if (!nextCursor) break;
       continue;
     }
 
+    // 更新时间（用于与 since 比较）
+    const lastPostDate = R.last(currentPosts)?.createdAt;
+    if (lastPostDate) {
+      currentTime = lastPostDate;
+    }
+
+    // 过滤范围
+    const filteredPosts = currentPosts.filter(
+      (p: any) =>
+        p.medias?.length &&
+        (!p.createdAt || p.createdAt.isAfter(since)) &&
+        (!p.createdAt || p.createdAt.isBefore(until)),
+    );
+    skipCount += currentPosts.length - filteredPosts.length;
+
+    // 检查每个媒体，收集未下载的
     const paramsList: CreateDownloadTaskParams[] = [];
     const settings = useSettingsStore.getState();
     for (const post of filteredPosts) {
-      let postAdded = false;
       for (const media of post.medias!) {
         if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
           continue;
@@ -386,30 +342,10 @@ export async function runCreationTask(
             continue;
           }
           paramsList.push({ media, post });
-          postAdded = true;
         } catch (e: any) {
           logFn('error', `准备失败: ${e.message}`);
           skipCount++;
         }
-      }
-      if (!postAdded) {
-        consecutiveSkippedPosts++;
-        if (consecutiveSkippedPosts >= 10) {
-          logFn('info', '连续跳过帖子达到阈值，提前结束');
-          if (completeCount > 0 || skipCount > 0) {
-            useDownloadStore
-              .getState()
-              .updateCreationTask({ ...task, completeCount, skipCount });
-          }
-          perf.measure(
-            `runTask-${taskId}`,
-            `runTask-${taskId}-start`,
-            `runTask-${taskId}-end`,
-          );
-          return;
-        }
-      } else {
-        consecutiveSkippedPosts = 0;
       }
     }
 
@@ -432,6 +368,9 @@ export async function runCreationTask(
         .updateCreationTask({ ...task, completeCount, skipCount });
       shouldUpdateUI = false;
     }
+
+    // 无更多页
+    if (!nextCursor) break;
   }
 
   if (completeCount > 0 || skipCount > 0) {
@@ -442,11 +381,11 @@ export async function runCreationTask(
 
   logFn(
     'info',
-    `用户 ${user.screenName} 完成: 下载 ${completeCount}, 跳过 ${skipCount}`,
+    `用户 ${user.screenName} 完成: 新增下载 ${completeCount}, 跳过 ${skipCount}`,
   );
   antNotification.success({
     message: `${user.screenName} 完成`,
-    description: `下载 ${completeCount}, 跳过 ${skipCount}`,
+    description: `新增下载 ${completeCount}, 跳过 ${skipCount}`,
   });
   perf.measure(
     `runTask-${taskId}`,
