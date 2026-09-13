@@ -4,7 +4,7 @@ import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
-import { getUserMedias } from '../../twitter/api';
+import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
 import { useDownloadStore } from './store';
 import { prepareDownloadTask, logFn } from './utils';
@@ -16,15 +16,17 @@ import { CreateDownloadTaskParams } from './types';
 
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
-const PRE_CHECK_COUNT = 20;            // 预检获取第一页帖子数（与主页一致）
+const PRE_CHECK_COUNT = 20;
 const UI_UPDATE_INTERVAL = 5;
+// 是否启用双源索引（媒体源 + 帖子源）以最大程度保证完整
+// true: 慢但完整；false: 只用媒体源（与主页一致）
+const ENABLE_DUAL_SOURCE_SCAN = true;
 
 // ===================== API 限流器（全局） =====================
 const MIN_API_INTERVAL_MS = 5000;
 const MAX_JITTER_MS = 3000;
 const BASE_RATE_LIMIT_WAIT_MS = 60000;
 const MAX_COOLDOWN_MS = 10 * 60 * 1000;
-const EMPTY_RETRY_WAIT_MS = 30000;
 const SUCCESS_THRESHOLD = 3;
 const WARMUP_COOLDOWN_MS = 30000;
 
@@ -98,13 +100,12 @@ interface PreCheckResult {
   success: boolean;
   existCount: number;
   totalMediaCount: number;
-  allExist: boolean;      // 第一页是否全部已下载
-  latestDate: dayjs.Dayjs | null;
+  allExist: boolean;
   firstPosts: any[];
   firstCursor: string | null;
 }
 
-// 预检：使用【媒体源】与主页保持一致
+// 预检：媒体源，判断第一页是否全部下载
 async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
   perf.mark('preCheck-start');
   try {
@@ -123,7 +124,6 @@ async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
         existCount: 0,
         totalMediaCount: 0,
         allExist: false,
-        latestDate: null,
         firstPosts: [],
         firstCursor: cursor ?? null,
       };
@@ -132,16 +132,9 @@ async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
     const settings = useSettingsStore.getState();
     let existCount = 0;
     let totalMediaCount = 0;
-    let latestDate: dayjs.Dayjs | null = null;
 
     for (const post of twitterPosts) {
       if (!post.medias?.length) continue;
-      // 记录最新日期
-      if (post.createdAt) {
-        if (!latestDate || post.createdAt.isAfter(latestDate)) {
-          latestDate = post.createdAt;
-        }
-      }
       for (const media of post.medias) {
         totalMediaCount++;
         try {
@@ -170,7 +163,7 @@ async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
     const allExist = totalMediaCount > 0 && existCount === totalMediaCount;
     logFn(
       'info',
-      `预检（媒体源）: 存在 ${existCount}/${totalMediaCount}, 全部已下载: ${allExist}, 最新日期: ${latestDate?.format('YYYY-MM-DD') || '无'}`,
+      `预检（媒体源）: 存在 ${existCount}/${totalMediaCount}, 全部已下载: ${allExist}`,
     );
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
     return {
@@ -178,7 +171,6 @@ async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
       existCount,
       totalMediaCount,
       allExist,
-      latestDate,
       firstPosts: twitterPosts,
       firstCursor: cursor ?? null,
     };
@@ -194,11 +186,141 @@ async function preCheckWithMedias(user: TwitterUser): Promise<PreCheckResult> {
       existCount: 0,
       totalMediaCount: 0,
       allExist: false,
-      latestDate: null,
       firstPosts: [],
       firstCursor: null,
     };
   }
+}
+
+// 单个源的索引：返回未下载的任务列表 + 跳过数量
+interface IndexResult {
+  tasks: CreateDownloadTaskParams[];
+  skipCount: number;
+  success: boolean;
+}
+
+async function indexBySource(
+  user: TwitterUser,
+  source: 'medias' | 'tweets',
+  filter: CreationTask['filter'],
+  abortSignal: AbortSignal,
+  seenMediaIds: Set<string>, // 已见过的 media.id（跨源去重）
+  firstPage?: { posts: any[]; cursor: string | null | undefined },
+): Promise<IndexResult> {
+  const getListFn = source === 'medias' ? getUserMedias : getUserTweets;
+  const taskId = user.id;
+
+  const since = filter.dateRange?.[0] || dayjs.unix(0);
+  const until = filter.dateRange?.[1] || dayjs();
+
+  let tasks: CreateDownloadTaskParams[] = [];
+  let skipCount = 0;
+
+  let currentPosts = firstPage?.posts ?? [];
+  let nextCursor: string | null | undefined = firstPage
+    ? firstPage.cursor
+    : undefined;
+  let isFirstPage = !!firstPage;
+  let currentTime = dayjs();
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (abortSignal.aborted) return { tasks, skipCount, success: false };
+
+    if (!isFirstPage) {
+      if (!nextCursor) break;
+      if (currentTime.isBefore(since)) {
+        logFn(
+          'info',
+          `[${source}] 已到达时间范围起点，停止翻页`,
+        );
+        break;
+      }
+      try {
+        await waitForApiSlot();
+        perf.mark(`api-${taskId}-${source}-start`);
+        const resp = await getListFn(user.id, nextCursor);
+        perf.measure(
+          `api-${taskId}-${source}`,
+          `api-${taskId}-${source}-start`,
+          `api-${taskId}-${source}-end`,
+        );
+        recordSuccess();
+        currentPosts = resp.twitterPosts;
+        nextCursor = resp.cursor;
+      } catch (apiErr: any) {
+        const errMsg =
+          typeof apiErr?.message === 'string'
+            ? apiErr.message
+            : String(apiErr);
+        logFn('error', `[${source}] API请求失败: ${errMsg}`);
+        perf.log(`API failed: ${errMsg}`);
+        if (isRateLimitError(errMsg)) {
+          recordRateLimit();
+          antNotification.warning({
+            message: '检测到 API 限流',
+            description: `将全局冷却后自动重试`,
+          });
+          continue;
+        }
+        throw apiErr;
+      }
+    }
+    isFirstPage = false;
+
+    if (!currentPosts.length) {
+      if (!nextCursor) break;
+      continue;
+    }
+
+    const lastPostDate = R.last(currentPosts)?.createdAt;
+    if (lastPostDate) {
+      currentTime = lastPostDate;
+    }
+
+    const filteredPosts = currentPosts.filter(
+      (p: any) =>
+        p.medias?.length &&
+        (!p.createdAt || p.createdAt.isAfter(since)) &&
+        (!p.createdAt || p.createdAt.isBefore(until)),
+    );
+    skipCount += currentPosts.length - filteredPosts.length;
+
+    const settings = useSettingsStore.getState();
+    for (const post of filteredPosts) {
+      for (const media of post.medias!) {
+        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
+          continue;
+        // 跨源去重：media.id 是全局唯一的
+        const mediaId = media.id || `${post.id}-${media.url}`;
+        if (seenMediaIds.has(mediaId)) {
+          continue;
+        }
+        seenMediaIds.add(mediaId);
+
+        try {
+          const dlTask = await prepareDownloadTask({ post, media });
+          const filePath = await path.join(dlTask.dir, dlTask.fileName);
+          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
+            skipCount++;
+            continue;
+          }
+          tasks.push({ media, post });
+        } catch (e: any) {
+          logFn('error', `准备失败: ${e.message}`);
+          skipCount++;
+        }
+      }
+    }
+
+    if (!nextCursor) break;
+  }
+
+  logFn(
+    'info',
+    `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`,
+  );
+  return { tasks, skipCount, success: true };
 }
 
 // ===================== 核心任务执行 =====================
@@ -214,7 +336,6 @@ export async function runCreationTask(
   // 预检（媒体源）
   const preCheckResult = await preCheckWithMedias(user);
 
-  // ---- 决策：跳过 / 全量索引 ----
   if (!preCheckResult.success) {
     logFn(
       'warn',
@@ -238,154 +359,71 @@ export async function runCreationTask(
 
   logFn(
     'info',
-    `用户 ${user.screenName} 存在未下载媒体（${preCheckResult.existCount}/${preCheckResult.totalMediaCount}），进入全量索引`,
+    `用户 ${user.screenName} 存在未下载媒体（${preCheckResult.existCount}/${preCheckResult.totalMediaCount}），开始索引`,
   );
 
-  // ---- 全量索引：从第一页开始，一直翻页到 cursor 为空 ----
-  let completeCount = 0;
-  let skipCount = 0;
-  let currentTime = preCheckResult.latestDate || dayjs();
-  const since = filter.dateRange?.[0] || dayjs.unix(0);
-  const until = filter.dateRange?.[1] || dayjs();
-  let processedUserCount = 0;
-  let shouldUpdateUI = false;
+  const seenMediaIds = new Set<string>();
+  let allTasks: CreateDownloadTaskParams[] = [];
+  let totalSkip = 0;
 
-  let currentPosts = preCheckResult.firstPosts;
-  let nextCursor: string | null | undefined = preCheckResult.firstCursor;
-  let isFirstPage = true;
+  // ---- 源 1：媒体源（与主页一致） ----
+  const mediaIndex = await indexBySource(
+    user,
+    'medias',
+    filter,
+    abortSignal,
+    seenMediaIds,
+    {
+      posts: preCheckResult.firstPosts,
+      cursor: preCheckResult.firstCursor,
+    },
+  );
+  allTasks.push(...mediaIndex.tasks);
+  totalSkip += mediaIndex.skipCount;
 
-  // 循环处理每一页
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    if (abortSignal.aborted) break;
-
-    if (!isFirstPage) {
-      // 非第一页需要请求 API
-      if (!nextCursor) break;
-      if (currentTime.isBefore(since)) {
-        logFn(
-          'info',
-          `已到达时间范围起点 ${since.format('YYYY-MM-DD')}，停止翻页`,
-        );
-        break;
-      }
-      try {
-        await waitForApiSlot();
-        perf.mark(`api-${taskId}-start`);
-        const resp = await getUserMedias(user.id, nextCursor);
-        perf.measure(
-          `api-${taskId}`,
-          `api-${taskId}-start`,
-          `api-${taskId}-end`,
-        );
-        recordSuccess();
-        currentPosts = resp.twitterPosts;
-        nextCursor = resp.cursor;
-      } catch (apiErr: any) {
-        const errMsg =
-          typeof apiErr?.message === 'string'
-            ? apiErr.message
-            : String(apiErr);
-        logFn('error', `API请求失败: ${errMsg}`);
-        perf.log(`API failed: ${errMsg}`);
-
-        if (isRateLimitError(errMsg)) {
-          recordRateLimit();
-          antNotification.warning({
-            message: '检测到 API 限流',
-            description: `将全局冷却后自动重试`,
-          });
-          continue;
-        }
-        throw apiErr;
-      }
-    }
-    isFirstPage = false;
-
+  // ---- 源 2：帖子源（补齐媒体源可能遗漏的内容） ----
+  if (ENABLE_DUAL_SOURCE_SCAN) {
     logFn(
       'info',
-      `处理第 ${processedUserCount + 1} 页, 帖子数=${currentPosts.length}, cursor=${nextCursor ? '有' : '无'}`,
+      `用户 ${user.screenName} 开始帖子源索引（补齐媒体源可能遗漏的内容）`,
     );
-
-    if (!currentPosts.length) {
-      if (!nextCursor) break;
-      continue;
-    }
-
-    // 更新时间（用于与 since 比较）
-    const lastPostDate = R.last(currentPosts)?.createdAt;
-    if (lastPostDate) {
-      currentTime = lastPostDate;
-    }
-
-    // 过滤范围
-    const filteredPosts = currentPosts.filter(
-      (p: any) =>
-        p.medias?.length &&
-        (!p.createdAt || p.createdAt.isAfter(since)) &&
-        (!p.createdAt || p.createdAt.isBefore(until)),
+    const tweetsIndex = await indexBySource(
+      user,
+      'tweets',
+      filter,
+      abortSignal,
+      seenMediaIds,
     );
-    skipCount += currentPosts.length - filteredPosts.length;
-
-    // 检查每个媒体，收集未下载的
-    const paramsList: CreateDownloadTaskParams[] = [];
-    const settings = useSettingsStore.getState();
-    for (const post of filteredPosts) {
-      for (const media of post.medias!) {
-        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
-          continue;
-        try {
-          const dlTask = await prepareDownloadTask({ post, media });
-          const filePath = await path.join(dlTask.dir, dlTask.fileName);
-          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
-            skipCount++;
-            continue;
-          }
-          paramsList.push({ media, post });
-        } catch (e: any) {
-          logFn('error', `准备失败: ${e.message}`);
-          skipCount++;
-        }
-      }
-    }
-
-    if (paramsList.length) {
-      perf.mark(`batchCreate-${taskId}-start`);
-      await useDownloadStore.getState().batchCreateDownloadTask(paramsList);
-      perf.measure(
-        `batchCreate-${taskId}`,
-        `batchCreate-${taskId}-start`,
-        `batchCreate-${taskId}-end`,
-      );
-      completeCount += paramsList.length;
-      processedUserCount++;
-      shouldUpdateUI = true;
-    }
-
-    if (shouldUpdateUI && processedUserCount % UI_UPDATE_INTERVAL === 0) {
-      useDownloadStore
-        .getState()
-        .updateCreationTask({ ...task, completeCount, skipCount });
-      shouldUpdateUI = false;
-    }
-
-    // 无更多页
-    if (!nextCursor) break;
+    allTasks.push(...tweetsIndex.tasks);
+    totalSkip += tweetsIndex.skipCount;
   }
 
-  if (completeCount > 0 || skipCount > 0) {
-    useDownloadStore
-      .getState()
-      .updateCreationTask({ ...task, completeCount, skipCount });
+  // ---- 一次性创建所有任务 ----
+  if (allTasks.length) {
+    perf.mark(`batchCreate-${taskId}-start`);
+    await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
+    perf.measure(
+      `batchCreate-${taskId}`,
+      `batchCreate-${taskId}-start`,
+      `batchCreate-${taskId}-end`,
+    );
   }
+
+  useDownloadStore
+    .getState()
+    .updateCreationTask({
+      ...task,
+      completeCount: allTasks.length,
+      skipCount: totalSkip,
+    });
 
   logFn(
     'info',
-    `用户 ${user.screenName} 完成: 新增下载 ${completeCount}, 跳过 ${skipCount}`,
+    `用户 ${user.screenName} 完成: 新增下载 ${allTasks.length}, 跳过 ${totalSkip}${ENABLE_DUAL_SOURCE_SCAN ? '（双源索引）' : ''}`,
   );
   antNotification.success({
     message: `${user.screenName} 完成`,
-    description: `新增下载 ${completeCount}, 跳过 ${skipCount}`,
+    description: `新增下载 ${allTasks.length}, 跳过 ${totalSkip}`,
   });
   perf.measure(
     `runTask-${taskId}`,
