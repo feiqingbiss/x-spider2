@@ -25,10 +25,10 @@ import { delay } from '../utils';
 const TIMEOUT_MS = 60000;
 const BATCH_SIZE = 2;
 const BATCH_DELAY_MS = 2500;
-const MAX_RETRIES = 3;           // 单个用户内重试次数
-const RETRY_DELAY_MS = 8000;     // 单次重试间隔
-const ROUND_DELAY_MS = 30000;    // 轮次间隔（全部跑完后的重试轮次）
-const RETRY_ROUNDS = 2;          // 失败后整体重试的轮数
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 8000;
+const ROUND_DELAY_MS = 30000;
+const RETRY_ROUNDS = 2;
 
 // 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
@@ -198,7 +198,6 @@ export const Homepage: React.FC = () => {
           err,
         );
 
-        // 限流 → 等待更久
         if (isRateLimitError(err)) {
           const waitMs = RETRY_DELAY_MS * attempt * 2;
           notification.warning({
@@ -208,7 +207,6 @@ export const Homepage: React.FC = () => {
           continue;
         }
 
-        // 超时
         if (err?.message?.includes('超时')) {
           if (attempt < MAX_RETRIES) {
             notification.warning({
@@ -219,7 +217,6 @@ export const Homepage: React.FC = () => {
             timeoutCounter.count++;
           }
         } else {
-          // 其他错误
           if (attempt < MAX_RETRIES) {
             notification.warning({
               message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
@@ -274,6 +271,29 @@ export const Homepage: React.FC = () => {
     }
 
     return failed;
+  };
+
+  // 把失败用户写入下载目录的 failed_users.txt
+  const writeFailedUsersFile = async (failed: string[]): Promise<string | null> => {
+    if (!saveDirBase) return null;
+    try {
+      const filePath = await path.join(saveDirBase, 'failed_users.txt');
+      if (failed.length === 0) {
+        // 无失败：删除旧文件，避免误导
+        try {
+          if (await fs.exists(filePath)) {
+            await fs.removeFile(filePath);
+          }
+        } catch (_) {}
+        return null;
+      }
+      const content = failed.join('\n');
+      await fs.writeTextFile(filePath, content);
+      return filePath;
+    } catch (err) {
+      console.error('写入失败用户文件失败:', err);
+      return null;
+    }
   };
 
   // 一键批量下载（含多轮重试）
@@ -359,6 +379,9 @@ export const Homepage: React.FC = () => {
       setIsBatchRunning(false);
       await fetchUserListCount();
 
+      // 把失败用户写到下载目录
+      const failedFilePath = await writeFailedUsersFile(pending);
+
       const extras: string[] = [];
       if (timeoutCounter.count > 0) extras.push(`超时 ${timeoutCounter.count} 个`);
       if (pending.length > 0) {
@@ -367,9 +390,8 @@ export const Homepage: React.FC = () => {
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
 
       if (pending.length > 0) {
-        // 仅提示，不移除
         message.warning(
-          `批量下载完成：成功 ${successCounter.count}，失败 ${pending.length}${extraMsg}。失败用户保留在名单中，可稍后再次尝试。`,
+          `批量下载完成：成功 ${successCounter.count}，失败 ${pending.length}${extraMsg}。失败用户已保存到 ${failedFilePath || '下载目录的 failed_users.txt'}。`,
         );
         console.warn('最终失败的用户（保留在名单中）:', pending);
       } else {
