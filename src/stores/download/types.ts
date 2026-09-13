@@ -23,7 +23,9 @@ export interface DownloadStore {
   autoSyncTaskIds: string[];
   setAutoSyncTaskIds: (ids: string[]) => void;
   createDownloadTask: (params: CreateDownloadTaskParams) => Promise<void>;
-  batchCreateDownloadTask: (paramsList: CreateDownloadTaskParams[]) => Promise<void>;
+  batchCreateDownloadTask: (
+    paramsList: CreateDownloadTaskParams[],
+  ) => Promise<void>;
   pauseDownloadTask: (gid: string) => Promise<void>;
   pauseAllDownloadTask: () => Promise<void>;
   unpauseDownloadTask: (gid: string) => Promise<void>;

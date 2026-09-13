@@ -33,7 +33,6 @@ export interface HomepageStore {
   loadMorePostList: () => Promise<void>;
 }
 
-// 使用 request id 保证只有最新的请求生效
 let loadPostListRequestId = 0;
 let loadUserRequestId = 0;
 
@@ -42,7 +41,6 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
   setKeyword: (kw: string) => set({ keyword: kw }),
   filter: {
     mediaTypes: [MediaType.Photo, MediaType.Video, MediaType.Gif],
-    source: 'medias',
   },
   setFilter: (filter) => set({ filter }),
 
@@ -53,53 +51,25 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
   loadUser: async (screenName: string) => {
     const requestId = ++loadUserRequestId;
 
-    // 清空当前用户和列表，避免显示旧数据
     set({
-      userInfo: {
-        data: undefined,
-        loading: true,
-      },
-      postList: {
-        cursor: null,
-        list: undefined,
-        loading: false,
-      },
+      userInfo: { data: undefined, loading: true },
+      postList: { cursor: null, list: undefined, loading: false },
     });
-    // 使正在进行的 postList 请求失效
     loadPostListRequestId++;
 
     try {
       const value = await getUser(screenName);
-
-      if (requestId !== loadUserRequestId) {
-        return;
-      }
-
-      set({
-        userInfo: {
-          loading: false,
-          data: value,
-        },
-      });
+      if (requestId !== loadUserRequestId) return;
+      set({ userInfo: { loading: false, data: value } });
     } catch (err: any) {
-      if (requestId !== loadUserRequestId) {
-        return;
-      }
-      set({
-        userInfo: {
-          data: undefined,
-          loading: false,
-        },
-      });
+      if (requestId !== loadUserRequestId) return;
+      set({ userInfo: { data: undefined, loading: false } });
       throw err;
     }
   },
   clearUser: () =>
     set({
-      userInfo: {
-        loading: false,
-        data: undefined,
-      },
+      userInfo: { loading: false, data: undefined },
     }),
 
   postList: {
@@ -108,14 +78,9 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     cursor: null,
   },
   clearPostList: () => {
-    // 使正在进行的请求失效
     loadPostListRequestId++;
     set({
-      postList: {
-        cursor: null,
-        list: undefined,
-        loading: false,
-      },
+      postList: { cursor: null, list: undefined, loading: false },
     });
   },
   loadPostList: async () => {
@@ -128,39 +93,22 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     }
 
     set({
-      postList: {
-        cursor: null,
-        list: undefined,
-        loading: true,
-      },
+      postList: { cursor: null, list: undefined, loading: true },
     });
 
     try {
       const { cursor, twitterPosts } = await getUserMedias(userInfo.id);
 
-      // 丢弃过期请求
-      if (requestId !== loadPostListRequestId) {
-        return;
-      }
+      if (requestId !== loadPostListRequestId) return;
 
       set({
-        postList: {
-          list: twitterPosts,
-          loading: false,
-          cursor,
-        },
+        postList: { list: twitterPosts, loading: false, cursor },
       });
     } catch (err: any) {
-      if (requestId !== loadPostListRequestId) {
-        return;
-      }
+      if (requestId !== loadPostListRequestId) return;
       log.error('Failed to load post list', err);
       set({
-        postList: {
-          cursor: null,
-          list: [],
-          loading: false,
-        },
+        postList: { cursor: null, list: [], loading: false },
       });
       throw new Error(`加载图片列表失败：${err?.message || '未知原因'}`);
     }
@@ -170,20 +118,11 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
     const postList = state.postList;
     const userInfo = state.userInfo.data;
 
-    if (!postList.list) {
-      throw new Error('未初始化列表');
-    }
-    if (postList.loading) {
-      throw new Error('已正在加载中');
-    }
-    if (!postList.cursor) {
-      throw new Error('没有更多数据了');
-    }
-    if (!userInfo) {
-      throw new Error('未加载用户信息');
-    }
+    if (!postList.list) throw new Error('未初始化列表');
+    if (postList.loading) throw new Error('已正在加载中');
+    if (!postList.cursor) throw new Error('没有更多数据了');
+    if (!userInfo) throw new Error('未加载用户信息');
 
-    // 记录当前 requestId，加载更多时不递增
     const currentRequestId = loadPostListRequestId;
 
     set(
@@ -198,10 +137,7 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         postList.cursor,
       );
 
-      // 如果加载过程中用户切换了，丢弃结果
-      if (currentRequestId !== loadPostListRequestId) {
-        return;
-      }
+      if (currentRequestId !== loadPostListRequestId) return;
 
       set({
         postList: {
@@ -211,9 +147,7 @@ export const useHomepageStore = create<HomepageStore>((set, get) => ({
         },
       });
     } catch (err: any) {
-      if (currentRequestId !== loadPostListRequestId) {
-        return;
-      }
+      if (currentRequestId !== loadPostListRequestId) return;
       set(
         produce(state, (draft) => {
           draft.postList.loading = false;

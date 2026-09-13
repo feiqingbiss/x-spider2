@@ -5,7 +5,6 @@ import {
   DeleteOutlined,
   FolderOpenOutlined,
   SearchOutlined,
-  DiffOutlined,
 } from '@ant-design/icons';
 import { path, fs, shell } from '@tauri-apps/api';
 import { useSettingsStore } from '../../stores/settings';
@@ -120,64 +119,25 @@ export const UserListManager: React.FC<Props> = ({
     await handleDelete(name);
   };
 
-  const handleCompareFolders = async () => {
-    if (!saveDirBase) {
-      message.error('请先在设置中配置下载保存路径');
-      return;
-    }
-    try {
-      if (!(await fs.exists(saveDirBase))) {
-        message.error('下载目录不存在，请检查设置');
-        return;
-      }
-
-      const entries = await fs.readDir(saveDirBase);
-      const folderNames = entries
-        .filter((entry) => entry.children !== undefined || entry.name)
-        .map((entry) => entry.name)
-        .filter((name): name is string => !!name);
-
-      if (folderNames.length === 0) {
-        return;
-      }
-
-      const filePath = await getListFilePath();
-      let listContent = '';
-      try {
-        listContent = await fs.readTextFile(filePath);
-      } catch (e) {}
-
-      const listUsernames = listContent
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
-
-      const invalidFolders = folderNames.filter(
-        (folder) => !listUsernames.includes(folder),
-      );
-
-      const outputPath = await path.join(saveDirBase, 'invalid_folders.txt');
-      await fs.writeTextFile(outputPath, invalidFolders.join('\n'));
-    } catch (err: any) {
-      message.error(`对比失败：${err?.message || '未知错误'}`);
-    }
-  };
-
   const filteredUsers = useMemo(() => {
     if (!searchKeyword.trim()) return users;
     const kw = searchKeyword.trim().toLowerCase();
     return users.filter((u) => u.toLowerCase().includes(kw));
   }, [users, searchKeyword]);
 
-  const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
+  const Row = ({
+    index,
+    style,
+  }: {
+    index: number;
+    style: React.CSSProperties;
+  }) => {
     const item = filteredUsers[index];
     return (
-      <div style={style} className="flex items-center justify-between px-2">
+      <div
+        style={style}
+        className="flex items-center justify-between px-2"
+      >
         <span className="truncate max-w-[300px]">{item}</span>
         <Button
           type="text"
@@ -220,9 +180,6 @@ export const UserListManager: React.FC<Props> = ({
           </Button>
           <Button icon={<FolderOpenOutlined />} onClick={openListFile}>
             打开文件
-          </Button>
-          <Button icon={<DiffOutlined />} onClick={handleCompareFolders}>
-            对比下载目录
           </Button>
         </Space>
 

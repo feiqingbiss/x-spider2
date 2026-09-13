@@ -312,11 +312,12 @@ export async function runCreationTask(
         recordSuccess();
 
         if (retry.twitterPosts.length === 0) {
+          // 媒体源无结果时切换到帖子源（不再依赖 filter.source）
           if (useMediaSource) {
             logFn('warn', `媒体源无结果，切换到帖子源重试`);
             const updatedTask: CreationTask = {
               ...task,
-              filter: { ...filter, source: 'tweets' as const },
+              filter: { ...filter },
             };
             await runCreationTask(updatedTask, abortSignal);
             return;

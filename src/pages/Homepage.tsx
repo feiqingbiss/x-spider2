@@ -1,12 +1,11 @@
 /* eslint-disable react/prop-types */
-import { Avatar, Button, Input, Space, App, Card, Progress, Radio } from 'antd';
+import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   HistoryOutlined,
   DownOutlined,
   UpOutlined,
   FileTextOutlined,
-  SyncOutlined,
   CloudDownloadOutlined,
 } from '@ant-design/icons';
 import { PageHeader } from '../components/PageHeader';
@@ -86,7 +85,6 @@ export const Homepage: React.FC = () => {
     loadUser,
     clearPostList: clearMediaList,
     filter,
-    setFilter,
   } = useHomepageStore();
 
   const {
@@ -138,11 +136,6 @@ export const Homepage: React.FC = () => {
     }, 200);
     return () => clearTimeout(timer);
   }, [fetchUserListCount]);
-
-  const handleRefresh = async () => {
-    await fetchUserListCount();
-    message.success('列表已刷新（搜索历史不变）');
-  };
 
   const cleanUsername = (input: string): string => {
     let text = input.trim();
@@ -274,12 +267,13 @@ export const Homepage: React.FC = () => {
   };
 
   // 把失败用户写入下载目录的 failed_users.txt
-  const writeFailedUsersFile = async (failed: string[]): Promise<string | null> => {
+  const writeFailedUsersFile = async (
+    failed: string[],
+  ): Promise<string | null> => {
     if (!saveDirBase) return null;
     try {
       const filePath = await path.join(saveDirBase, 'failed_users.txt');
       if (failed.length === 0) {
-        // 无失败：删除旧文件，避免误导
         try {
           if (await fs.exists(filePath)) {
             await fs.removeFile(filePath);
@@ -379,11 +373,11 @@ export const Homepage: React.FC = () => {
       setIsBatchRunning(false);
       await fetchUserListCount();
 
-      // 把失败用户写到下载目录
       const failedFilePath = await writeFailedUsersFile(pending);
 
       const extras: string[] = [];
-      if (timeoutCounter.count > 0) extras.push(`超时 ${timeoutCounter.count} 个`);
+      if (timeoutCounter.count > 0)
+        extras.push(`超时 ${timeoutCounter.count} 个`);
       if (pending.length > 0) {
         extras.push(`重试后仍失败 ${pending.length} 个`);
       }
@@ -443,7 +437,9 @@ export const Homepage: React.FC = () => {
                   onClick={() => setHistoryVisible(!historyVisible)}
                 >
                   <HistoryOutlined className="mr-1 text-xs" />
-                  <span className="text-[11px]">搜索历史 ({searchHistory.length})</span>
+                  <span className="text-[11px]">
+                    搜索历史 ({searchHistory.length})
+                  </span>
                   {historyVisible ? (
                     <UpOutlined className="ml-1 text-[9px]" />
                   ) : (
@@ -494,19 +490,9 @@ export const Homepage: React.FC = () => {
             bodyStyle={{ padding: '10px 16px' }}
           >
             <div className="flex items-center justify-between flex-wrap gap-y-2">
-              <div className="flex items-center space-x-4">
-                <div className="flex items-center">
-                  <span className="text-gray-400 text-sm">已就绪：</span>
-                  <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
-                </div>
-                <Radio.Group
-                  value={filter.source}
-                  onChange={(e) => setFilter({ ...filter, source: e.target.value })}
-                  size="small"
-                >
-                  <Radio.Button value="medias">媒体</Radio.Button>
-                  <Radio.Button value="tweets">帖子</Radio.Button>
-                </Radio.Group>
+              <div className="flex items-center">
+                <span className="text-gray-400 text-sm">名单用户：</span>
+                <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
               </div>
 
               <Space size="middle">
@@ -515,9 +501,6 @@ export const Homepage: React.FC = () => {
                   onClick={() => setManageModalVisible(true)}
                 >
                   管理名单
-                </Button>
-                <Button icon={<SyncOutlined />} onClick={handleRefresh}>
-                  刷新列表
                 </Button>
                 <Button
                   type="primary"

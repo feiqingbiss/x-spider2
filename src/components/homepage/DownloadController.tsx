@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import { App, Button, Checkbox, DatePicker, Form, Radio, Space } from 'antd';
+import { App, Button, Checkbox, DatePicker, Form, Space } from 'antd';
 import dayjs from 'dayjs';
 import React from 'react';
 import MediaType from '../../enums/MediaType';
@@ -51,10 +51,7 @@ export const DownloadController: React.FC = () => {
         <Form.Item name="dateRange" label="日期范围">
           <DatePicker.RangePicker
             presets={[
-              {
-                label: '至今',
-                value: [dayjs.unix(0), dayjs()],
-              },
+              { label: '至今', value: [dayjs.unix(0), dayjs()] },
               {
                 label: '最近 7 天',
                 value: [dayjs().subtract(7, 'day'), dayjs()],
@@ -82,36 +79,9 @@ export const DownloadController: React.FC = () => {
         <Form.Item name="mediaTypes" label="媒体类型">
           <Checkbox.Group
             options={[
-              {
-                label: '视频',
-                value: MediaType.Video,
-              },
-              {
-                label: '照片',
-                value: MediaType.Photo,
-              },
-              {
-                label: 'GIF',
-                value: MediaType.Gif,
-              },
-            ]}
-          />
-        </Form.Item>
-        <Form.Item
-          name="source"
-          label="下载源"
-          tooltip="帖子能下载到更早的推文，但爬取速度较慢；媒体可能下载不到更早的推文，但爬取速度更快。"
-        >
-          <Radio.Group
-            options={[
-              {
-                label: '帖子',
-                value: 'tweets',
-              },
-              {
-                label: '媒体',
-                value: 'medias',
-              },
+              { label: '视频', value: MediaType.Video },
+              { label: '照片', value: MediaType.Photo },
+              { label: 'GIF', value: MediaType.Gif },
             ]}
           />
         </Form.Item>
