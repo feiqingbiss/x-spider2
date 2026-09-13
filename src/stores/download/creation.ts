@@ -22,12 +22,12 @@ const PRE_CHECK_COUNT = 20;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
 // ===================== API 限流器（全局） =====================
-const MIN_API_INTERVAL_MS = 5000;
-const MAX_JITTER_MS = 3000;
-const BASE_RATE_LIMIT_WAIT_MS = 60000;
-const MAX_COOLDOWN_MS = 10 * 60 * 1000;
-const SUCCESS_THRESHOLD = 3;
-const WARMUP_COOLDOWN_MS = 30000;
+const MIN_API_INTERVAL_MS = 7000;            // 请求最小间隔 7 秒
+const MAX_JITTER_MS = 3000;                  // 随机抖动上限 3 秒
+const BASE_RATE_LIMIT_WAIT_MS = 120000;      // 首次限流 2 分钟
+const MAX_COOLDOWN_MS = 10 * 60 * 1000;      // 上限 10 分钟
+const SUCCESS_THRESHOLD = 5;                 // 连续成功 5 次才重置
+const WARMUP_COOLDOWN_MS = 60000;            // 恢复后温启动 1 分钟
 
 let globalCooldownUntil = 0;
 let lastApiCallTime = 0;
@@ -64,7 +64,8 @@ function isRateLimitError(msg: string): boolean {
     m.includes('status=429') ||
     m.includes('expected value at line 1 column 1') ||
     m.includes('rate limit') ||
-    m.includes('too many requests')
+    m.includes('too many requests') ||
+    m.includes('error decoding response body')
   );
 }
 
@@ -203,7 +204,7 @@ async function indexBySource(
   source: 'medias' | 'tweets',
   filter: CreationTask['filter'],
   abortSignal: AbortSignal,
-  seenMediaIds: Set<string>, // 已见过的 media.id（跨源去重）
+  seenMediaIds: Set<string>,
   firstPage?: { posts: any[]; cursor: string | null | undefined },
 ): Promise<IndexResult> {
   const getListFn = source === 'medias' ? getUserMedias : getUserTweets;
@@ -287,7 +288,6 @@ async function indexBySource(
       for (const media of post.medias!) {
         if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
           continue;
-        // 跨源去重：media.id 是全局唯一的
         const mediaId = media.id || `${post.id}-${media.url}`;
         if (seenMediaIds.has(mediaId)) {
           continue;
@@ -329,7 +329,6 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  // 预检（媒体源）
   const preCheckResult = await preCheckWithMedias(user);
 
   if (!preCheckResult.success) {
@@ -362,7 +361,6 @@ export async function runCreationTask(
   const allTasks: CreateDownloadTaskParams[] = [];
   let totalSkip = 0;
 
-  // ---- 源 1：媒体源（与主页一致） ----
   const mediaIndex = await indexBySource(
     user,
     'medias',
@@ -377,7 +375,6 @@ export async function runCreationTask(
   allTasks.push(...mediaIndex.tasks);
   totalSkip += mediaIndex.skipCount;
 
-  // ---- 源 2：帖子源（补齐媒体源可能遗漏的内容） ----
   if (ENABLE_DUAL_SOURCE_SCAN) {
     logFn(
       'info',
@@ -394,7 +391,6 @@ export async function runCreationTask(
     totalSkip += tweetsIndex.skipCount;
   }
 
-  // ---- 一次性创建所有任务 ----
   if (allTasks.length) {
     perf.mark(`batchCreate-${taskId}-start`);
     await useDownloadStore.getState().batchCreateDownloadTask(allTasks);

@@ -5,11 +5,13 @@ import * as R from 'ramda';
 import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
 
-// 减少重试次数，避免限流时内部无限重试
 const MAX_RETRY_COUNT = 4;
 const MAX_RETRY_DELAY = 4000;
+// 限流日志节流：最多每 30 秒写一次，避免刷屏
+const RATE_LIMIT_LOG_INTERVAL = 30000;
 
 let log: ICategoriedLogger;
+let lastRateLimitLogTime = 0;
 
 function isRateLimitError(msg: string): boolean {
   const m = msg.toLowerCase();
@@ -53,9 +55,12 @@ export async function request(options: RequestOptions) {
       lastErr = err;
       const errMsg = err?.message || String(err);
 
-      // 遇到限流立即抛出，不进行内部重试（交给上层限流器处理）
       if (isRateLimitError(errMsg)) {
-        log.warn(`Rate limit detected, aborting internal retries: ${errMsg}`);
+        const now = Date.now();
+        if (now - lastRateLimitLogTime > RATE_LIMIT_LOG_INTERVAL) {
+          log.warn(`Rate limit detected: ${errMsg}`);
+          lastRateLimitLogTime = now;
+        }
         throw err;
       }
 

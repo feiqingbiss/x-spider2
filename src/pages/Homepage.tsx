@@ -29,7 +29,6 @@ const RETRY_DELAY_MS = 8000;
 const ROUND_DELAY_MS = 30000;
 const RETRY_ROUNDS = 2;
 
-// 辅助函数：随机打乱数组
 const shuffleArray = <T,>(arr: T[]): T[] => {
   const shuffled = [...arr];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -39,7 +38,6 @@ const shuffleArray = <T,>(arr: T[]): T[] => {
   return shuffled;
 };
 
-// 带超时的请求封装
 const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -57,7 +55,6 @@ const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => 
   });
 };
 
-// 限流判断
 const isRateLimitError = (err: any): boolean => {
   const msg = (err?.message || err?.toString() || '').toLowerCase();
   return (
@@ -171,13 +168,14 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 处理单个用户：返回 true 表示成功，false 表示失败
+  // 处理单个用户
   const processOneUser = async (
     name: string,
     successCounter: { count: number },
     timeoutCounter: { count: number },
   ): Promise<boolean> => {
     const downloadStore = useDownloadStore.getState();
+    const userLog = window.log.category('USER');
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
@@ -186,24 +184,32 @@ export const Homepage: React.FC = () => {
         successCounter.count++;
         return true;
       } catch (err: any) {
-        console.error(
-          `获取用户 ${name} 失败 (尝试 ${attempt}/${MAX_RETRIES}):`,
-          err,
+        const errMsg =
+          err?.message ||
+          (typeof err === 'string' ? err : '') ||
+          (err?.name ? `${err.name}` : '') ||
+          '未知错误';
+
+        userLog.warn(
+          `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`,
+          { message: errMsg, name: err?.name, stack: err?.stack },
         );
 
         if (isRateLimitError(err)) {
           const waitMs = RETRY_DELAY_MS * attempt * 2;
           notification.warning({
             message: `用户 ${name} 触发限流，等待 ${Math.round(waitMs / 1000)} 秒...`,
+            description: errMsg,
           });
           await delay(waitMs);
           continue;
         }
 
-        if (err?.message?.includes('超时')) {
+        if (errMsg.includes('超时')) {
           if (attempt < MAX_RETRIES) {
             notification.warning({
               message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
+              description: errMsg,
             });
             await delay(RETRY_DELAY_MS);
           } else {
@@ -213,9 +219,14 @@ export const Homepage: React.FC = () => {
           if (attempt < MAX_RETRIES) {
             notification.warning({
               message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
-              description: err?.message || '未知错误',
+              description: errMsg,
             });
             await delay(RETRY_DELAY_MS);
+          } else {
+            notification.warning({
+              message: `用户 ${name} 加载失败，已跳过`,
+              description: errMsg,
+            });
           }
         }
       }
@@ -223,7 +234,6 @@ export const Homepage: React.FC = () => {
     return false;
   };
 
-  // 处理一批用户，返回失败列表
   const processBatch = async (
     usernames: string[],
     successCounter: { count: number },
@@ -234,7 +244,10 @@ export const Homepage: React.FC = () => {
     const failed: string[] = [];
 
     for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
-      const batch = usernames.slice(i, Math.min(i + BATCH_SIZE, usernames.length));
+      const batch = usernames.slice(
+        i,
+        Math.min(i + BATCH_SIZE, usernames.length),
+      );
 
       await Promise.all(
         batch.map(async (name) => {
@@ -266,7 +279,6 @@ export const Homepage: React.FC = () => {
     return failed;
   };
 
-  // 把失败用户写入下载目录的 failed_users.txt
   const writeFailedUsersFile = async (
     failed: string[],
   ): Promise<string | null> => {
@@ -290,7 +302,6 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 一键批量下载（含多轮重试）
   const batchDownload = async () => {
     if (isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
@@ -336,7 +347,6 @@ export const Homepage: React.FC = () => {
       const successCounter = { count: 0 };
       const timeoutCounter = { count: 0 };
 
-      // 第 1 轮
       let pending = await processBatch(
         usernames,
         successCounter,
@@ -345,7 +355,6 @@ export const Homepage: React.FC = () => {
         total,
       );
 
-      // 后续重试轮
       for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
         message.info(
           `第 ${round} 轮重试，剩余 ${pending.length} 个用户（${ROUND_DELAY_MS / 1000}秒后开始）`,
@@ -368,7 +377,6 @@ export const Homepage: React.FC = () => {
         pending = stillFailed;
       }
 
-      // 结束
       setBatchProgress(null);
       setIsBatchRunning(false);
       await fetchUserListCount();
@@ -406,7 +414,6 @@ export const Homepage: React.FC = () => {
       <PageHeader />
 
       <div className="shrink-0 px-4 pb-2">
-        {/* 搜索区域 */}
         <section aria-label="搜索用户">
           <Space.Compact block>
             <Input
@@ -482,7 +489,6 @@ export const Homepage: React.FC = () => {
           )}
         </section>
 
-        {/* 管理条 */}
         <section className="mt-3">
           <Card
             size="small"
@@ -533,7 +539,6 @@ export const Homepage: React.FC = () => {
           </Card>
         </section>
 
-        {/* 用户信息 & 下载配置 */}
         {userInfo.data && (
           <div className="mt-4">
             <DownloadController />
@@ -569,14 +574,12 @@ export const Homepage: React.FC = () => {
         )}
       </div>
 
-      {/* 图墙 */}
       {userInfo.data && (
         <section className="relative grow overflow-auto border-t border-gray-100">
           <PostListGridView />
         </section>
       )}
 
-      {/* 管理名单弹窗 */}
       <UserListManager
         visible={manageModalVisible}
         onClose={() => setManageModalVisible(false)}

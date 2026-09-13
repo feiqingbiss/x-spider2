@@ -91,7 +91,7 @@ export function writeDebugLog(message: string) {
   })();
 }
 
-// debug-dl.log：全级别记录；应用日志：DL 分类只记录 WARN/ERROR
+// debug-dl.log：全级别记录（INFO/WARN/ERROR）
 export function logFn(level: string, ...args: any[]) {
   const msg = args
     .map((a) => {
@@ -107,10 +107,10 @@ export function logFn(level: string, ...args: any[]) {
     })
     .join(' ');
 
-  // 1) debug-dl.log：记录所有级别（INFO/WARN/ERROR），本地时间格式
+  // debug-dl.log 记录所有级别
   writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
 
-  // 2) 应用日志 <日期>.log：DL 分类只写 WARN/ERROR，避免文件体积过大
+  // 应用日志只写 WARN/ERROR
   if (level === 'warn' || level === 'error') {
     try {
       if (window.log?.category) {

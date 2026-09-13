@@ -134,10 +134,7 @@ export const UserListManager: React.FC<Props> = ({
   }) => {
     const item = filteredUsers[index];
     return (
-      <div
-        style={style}
-        className="flex items-center justify-between px-2"
-      >
+      <div style={style} className="flex items-center justify-between px-2">
         <span className="truncate max-w-[300px]">{item}</span>
         <Button
           type="text"
