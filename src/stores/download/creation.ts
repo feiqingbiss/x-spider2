@@ -17,7 +17,6 @@ import { CreateDownloadTaskParams } from './types';
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
 const PRE_CHECK_COUNT = 20;
-const UI_UPDATE_INTERVAL = 5;
 // 是否启用双源索引（媒体源 + 帖子源）以最大程度保证完整
 // true: 慢但完整；false: 只用媒体源（与主页一致）
 const ENABLE_DUAL_SOURCE_SCAN = true;
@@ -213,7 +212,7 @@ async function indexBySource(
   const since = filter.dateRange?.[0] || dayjs.unix(0);
   const until = filter.dateRange?.[1] || dayjs();
 
-  let tasks: CreateDownloadTaskParams[] = [];
+  const tasks: CreateDownloadTaskParams[] = [];
   let skipCount = 0;
 
   let currentPosts = firstPage?.posts ?? [];
@@ -230,10 +229,7 @@ async function indexBySource(
     if (!isFirstPage) {
       if (!nextCursor) break;
       if (currentTime.isBefore(since)) {
-        logFn(
-          'info',
-          `[${source}] 已到达时间范围起点，停止翻页`,
-        );
+        logFn('info', `[${source}] 已到达时间范围起点，停止翻页`);
         break;
       }
       try {
@@ -363,7 +359,7 @@ export async function runCreationTask(
   );
 
   const seenMediaIds = new Set<string>();
-  let allTasks: CreateDownloadTaskParams[] = [];
+  const allTasks: CreateDownloadTaskParams[] = [];
   let totalSkip = 0;
 
   // ---- 源 1：媒体源（与主页一致） ----
