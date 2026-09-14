@@ -1,604 +1,604 @@
-/* eslint-disable react/prop-types */
-import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  HistoryOutlined,
-  DownOutlined,
-  UpOutlined,
-  FileTextOutlined,
-  CloudDownloadOutlined,
-} from '@ant-design/icons';
-import { PageHeader } from '../components/PageHeader';
-import { PostListGridView } from '../components/homepage/PostListGridView';
-import { DownloadController } from '../components/homepage/DownloadController';
-import { useAppStateStore } from '../stores/app-state';
-import { useHomepageStore } from '../stores/homepage';
-import { buildUserUrl } from '../twitter/url';
-import { path, fs } from '@tauri-apps/api';
-import { getUser } from '../twitter/api';
-import { useDownloadStore } from '../stores/download';
-import { UserListManager } from '../components/homepage/UserListManager';
-import { useSettingsStore } from '../stores/settings';
-import { delay } from '../utils';
+import { fs, path } from '@tauri-apps/api';
+import * as R from 'ramda';
+import dayjs from 'dayjs';
+import { notification as antNotification } from 'antd';
+import { CreationTask } from '../../interfaces/CreationTask';
+import { TwitterUser } from '../../interfaces/TwitterUser';
+import { getUserMedias, getUserTweets } from '../../twitter/api';
+import { useSettingsStore } from '../settings';
+import { useDownloadStore } from './store';
+import { logFn } from './utils';
+import { perf } from './performance';
+import { delay } from '../../utils';
+import { resolveVariables } from '../../utils/file-name-template';
+import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
+import { CreateDownloadTaskParams } from './types';
 
-const TIMEOUT_MS = 60000;
-const BATCH_SIZE = 2;
-const BATCH_DELAY_MS = 2500;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 8000;
-const ROUND_DELAY_MS = 30000;
-const RETRY_ROUNDS = 2;
+// ===================== 基础配置 =====================
+const MAX_ACTIVE_TASKS = 1;
+const PRE_CHECK_COUNT = 20;
+const SKIP_DOWNLOAD_RATIO = 0.8;
+const ENABLE_DUAL_SOURCE_SCAN = true;
 
-// 用户友好错误信息
-const userFriendlyError = (err: any): string => {
-  const msg = (err?.message || err?.toString() || '').toLowerCase();
-  if (
-    msg.includes('status=429') ||
-    msg.includes('rate limit') ||
-    msg.includes('too many requests')
-  ) {
-    return '请求过于频繁，请稍后再试';
-  }
-  if (msg.includes('status=404') || msg.includes('找不到该用户')) {
-    return '用户不存在或访问受限';
-  }
-  if (msg.includes('超时') || msg.includes('timeout')) {
-    return '网络请求超时';
-  }
-  if (
-    msg.includes('tls handshake') ||
-    msg.includes('error decoding response body') ||
-    msg.includes('error sending request') ||
-    msg.includes('network') ||
-    msg.includes('eof') ||
-    msg.includes('10053')
-  ) {
-    return '网络连接异常，请检查代理配置';
-  }
-  return '加载失败，请稍后重试';
-};
+// ===================== API 限流器（全局） =====================
+const MIN_API_INTERVAL_MS = 7000;
+const MAX_JITTER_MS = 3000;
+const BASE_RATE_LIMIT_WAIT_MS = 120000;
+const MAX_COOLDOWN_MS = 10 * 60 * 1000;
+const SUCCESS_THRESHOLD = 5;
+const WARMUP_COOLDOWN_MS = 60000;
 
-const shuffleArray = <T,>(arr: T[]): T[] => {
-  const shuffled = [...arr];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-};
+const RATE_LIMIT_NOTIFY_INTERVAL = 60000;
+let lastRateLimitNotifyTime = 0;
 
-const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`请求超时（超过${timeoutMs / 1000}秒）`));
-    }, timeoutMs);
-    promise
-      .then((result) => {
-        clearTimeout(timer);
-        resolve(result);
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
+let globalCooldownUntil = 0;
+let lastApiCallTime = 0;
+let rateLimitStreak = 0;
+let successStreak = 0;
+
+async function waitForApiSlot(): Promise<void> {
+  const now = Date.now();
+
+  if (lastApiCallTime === 0 && now >= globalCooldownUntil) {
+    lastApiCallTime = now;
+    return;
+  }
+
+  if (now < globalCooldownUntil) {
+    const waitMs = globalCooldownUntil - now;
+    logFn('warn', `[限流] 全局冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒...`);
+    await delay(waitMs);
+  }
+  const sinceLast = Date.now() - lastApiCallTime;
+  const needWait = MIN_API_INTERVAL_MS - sinceLast;
+  if (needWait > 0) {
+    const jitter = Math.floor(Math.random() * MAX_JITTER_MS);
+    await delay(needWait + jitter);
+  }
+  lastApiCallTime = Date.now();
+}
+
+function setGlobalCooldown(ms: number): void {
+  const until = Date.now() + Math.min(ms, MAX_COOLDOWN_MS);
+  if (until > globalCooldownUntil) {
+    globalCooldownUntil = until;
+    logFn('warn', `[限流] 设置全局冷却 ${Math.ceil(ms / 1000)} 秒`);
+  }
+}
+
+function isRateLimitError(msg: string): boolean {
+  const m = msg.toLowerCase();
+  return (
+    m.includes('status=429') ||
+    m.includes('expected value at line 1 column 1') ||
+    m.includes('rate limit') ||
+    m.includes('too many requests') ||
+    m.includes('error decoding response body')
+  );
+}
+
+function recordRateLimit(): void {
+  rateLimitStreak = Math.min(rateLimitStreak + 1, 6);
+  successStreak = 0;
+  const cooldown = Math.min(
+    BASE_RATE_LIMIT_WAIT_MS * Math.pow(2, rateLimitStreak - 1),
+    MAX_COOLDOWN_MS,
+  );
+  setGlobalCooldown(cooldown);
+  logFn(
+    'warn',
+    `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`,
+  );
+}
+
+function recordSuccess(): void {
+  successStreak++;
+  if (successStreak >= SUCCESS_THRESHOLD && rateLimitStreak > 0) {
+    logFn('info', `[限流] 连续成功 ${successStreak} 次，重置限流计数`);
+    rateLimitStreak = 0;
+    successStreak = 0;
+    setGlobalCooldown(WARMUP_COOLDOWN_MS);
+  }
+}
+
+function notifyRateLimitOnce(cooldownSeconds: number) {
+  const now = Date.now();
+  if (now - lastRateLimitNotifyTime < RATE_LIMIT_NOTIFY_INTERVAL) return;
+  lastRateLimitNotifyTime = now;
+  antNotification.warning({
+    message: '请求过于频繁',
+    description: `已自动暂停约 ${cooldownSeconds} 秒后继续`,
+    duration: 5,
   });
-};
+}
 
-const isRateLimitError = (err: any): boolean => {
-  const msg = (err?.message || err?.toString() || '').toLowerCase();
-  return (
-    msg.includes('status=429') ||
-    msg.includes('too many requests') ||
-    msg.includes('rate limit')
-  );
-};
+// ===================== 辅助类型 =====================
+export const creationTaskAbortControllerMap = new Map<string, AbortController>();
 
-export const Homepage: React.FC = () => {
-  const { message, notification } = App.useApp();
-  const [historyVisible, setHistoryVisible] = useState(true);
-  const [manageModalVisible, setManageModalVisible] = useState(false);
-  const [userListCount, setUserListCount] = useState(0);
-  const [isBatchRunning, setIsBatchRunning] = useState(false);
+interface PreCheckResult {
+  success: boolean;
+  existCount: number;
+  totalMediaCount: number;
+  ratio: number;
+  cache: { posts: any[]; cursor: string | null } | null;
+  missingTasks: CreateDownloadTaskParams[];
+}
 
-  const batchProgress = useDownloadStore((s) => s.batchProgress);
-  const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
+interface IndexResult {
+  tasks: CreateDownloadTaskParams[];
+  skipCount: number;
+  success: boolean;
+}
 
-  const {
-    keyword,
-    setKeyword,
-    userInfo,
-    clearUser,
-    loadUser,
-    clearPostList: clearMediaList,
-    filter,
-  } = useHomepageStore();
+interface MediaInfo {
+  post: any;
+  media: any;
+  dir: string;
+  fileName: string;
+}
 
-  const {
-    searchHistory,
-    addSearchHistory,
-    clearSearchHistory,
-    cookieString,
-  } = useAppStateStore((s) => ({
-    searchHistory: s.searchHistory,
-    addSearchHistory: s.addSearchHistory,
-    clearSearchHistory: s.clearSearchHistory,
-    cookieString: s.cookieString,
-  }));
+// ===================== 批量分析已下载 =====================
+async function analyzePosts(
+  posts: any[],
+  filter: CreationTask['filter'],
+  seenMediaIds?: Set<string>,
+): Promise<{
+  existCount: number;
+  totalMediaCount: number;
+  missingTasks: CreateDownloadTaskParams[];
+}> {
+  const settings = useSettingsStore.getState();
+  const since = filter.dateRange?.[0] || dayjs.unix(0);
+  const until = filter.dateRange?.[1] || dayjs();
 
-  const searchAbortControllerRef = useRef<AbortController>();
-  const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
+  const mediaInfos: MediaInfo[] = [];
+  const dirSet = new Set<string>();
 
-  const getListFilePath = async (): Promise<string> => {
-    const baseDir = saveDirBase || (await path.appDataDir());
-    return await path.join(baseDir, 'search-user-name.txt');
-  };
-
-  const readUsernamesFromFile = async (): Promise<string[]> => {
-    try {
-      const filePath = await getListFilePath();
-      const content = await fs.readTextFile(filePath);
-      return content
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
-    } catch {
-      return [];
-    }
-  };
-
-  const fetchUserListCount = useCallback(async () => {
-    const names = await readUsernamesFromFile();
-    setUserListCount(names.length);
-  }, [saveDirBase]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchUserListCount();
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [fetchUserListCount]);
-
-  const cleanUsername = (input: string): string => {
-    let text = input.trim();
-    if (!text) return '';
-    try {
-      if (text.includes('x.com') || text.includes('twitter.com')) {
-        const urlString = text.startsWith('http') ? text : `https://${text}`;
-        const url = new URL(urlString);
-        const pathParts = url.pathname.split('/').filter((p) => p.length > 0);
-        if (pathParts.length > 0) return pathParts[0];
+  for (const post of posts) {
+    if (!post.medias?.length) continue;
+    if (post.createdAt) {
+      if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) {
+        continue;
       }
-      if (text.startsWith('@')) return text.substring(1);
-    } catch (e) {
-      console.error('识别用户名失败:', e);
     }
-    return text;
-  };
-
-  const startSearch = async (sn: string) => {
-    const cleanedSn = cleanUsername(sn);
-    if (!cleanedSn) return;
-    setKeyword(cleanedSn);
-    if (searchAbortControllerRef.current) {
-      searchAbortControllerRef.current.abort('Another search');
-    }
-    clearUser();
-    clearMediaList();
-    try {
-      await loadUser(cleanedSn);
-      addSearchHistory(cleanedSn);
-    } catch (err: any) {
-      message.error('加载失败，请检查用户 ID 是否正确');
-    }
-  };
-
-  const processOneUser = async (
-    name: string,
-    successCounter: { count: number },
-    timeoutCounter: { count: number },
-  ): Promise<boolean> => {
-    const downloadStore = useDownloadStore.getState();
-    const userLog = window.log.category('USER');
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    for (const media of post.medias) {
+      if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) {
+        continue;
+      }
+      const mediaId = media.id || `${post.id}-${media.url}`;
+      if (seenMediaIds) {
+        if (seenMediaIds.has(mediaId)) continue;
+        seenMediaIds.add(mediaId);
+      }
       try {
-        const user = await withTimeout(getUser(name), TIMEOUT_MS);
-        downloadStore.createCreationTask(user, filter);
-        successCounter.count++;
-        return true;
-      } catch (err: any) {
-        const errMsg = err?.message || String(err);
-        userLog.warn(
-          `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`,
-          { message: errMsg },
+        const templateData: FileNameTemplateData = { media, post };
+        const resolvedDirName = settings.download.dirTemplate
+          ? resolveVariables(settings.download.dirTemplate, templateData)
+          : '';
+        const dir = await path.join(
+          settings.download.saveDirBase,
+          resolvedDirName,
         );
-
-        if (isRateLimitError(err)) {
-          const waitMs = RETRY_DELAY_MS * attempt * 2;
-          if (attempt === 1) {
-            notification.warning({
-              message: '请求过于频繁',
-              description: `已自动暂停 ${Math.round(waitMs / 1000)} 秒后继续`,
-              duration: 4,
-            });
-          }
-          await delay(waitMs);
-          continue;
-        }
-
-        if (attempt < MAX_RETRIES) {
-          await delay(RETRY_DELAY_MS);
-          continue;
-        }
-
-        if (errMsg.includes('超时')) {
-          timeoutCounter.count++;
-        }
-        notification.warning({
-          message: `用户 ${name} 加载失败`,
-          description: userFriendlyError(err),
-          duration: 4,
-        });
+        const fileName = resolveVariables(
+          settings.download.fileNameTemplate,
+          templateData,
+        );
+        mediaInfos.push({ post, media, dir, fileName });
+        dirSet.add(dir);
+      } catch (e) {
+        // ignore
       }
     }
-    return false;
-  };
+  }
 
-  const processBatch = async (
-    usernames: string[],
-    successCounter: { count: number },
-    timeoutCounter: { count: number },
-    progressBase: number,
-    progressTotal: number,
-  ): Promise<string[]> => {
-    const failed: string[] = [];
-
-    for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
-      const batch = usernames.slice(
-        i,
-        Math.min(i + BATCH_SIZE, usernames.length),
-      );
-
-      await Promise.all(
-        batch.map(async (name) => {
-          const index = i + batch.indexOf(name);
-          setBatchProgress({
-            total: progressTotal,
-            completed: progressBase + index,
-            currentUser: name,
-          });
-
-          const ok = await processOneUser(name, successCounter, timeoutCounter);
-          if (!ok) failed.push(name);
-
-          setBatchProgress({
-            total: progressTotal,
-            completed: progressBase + index + 1,
-            currentUser: name,
-          });
-        }),
-      );
-
-      if (i + BATCH_SIZE < usernames.length) {
-        await delay(BATCH_DELAY_MS);
+  const dirToFiles = new Map<string, Set<string>>();
+  await Promise.all(
+    Array.from(dirSet).map(async (dir) => {
+      try {
+        if (!(await fs.exists(dir))) {
+          dirToFiles.set(dir, new Set());
+          return;
+        }
+        const entries = await fs.readDir(dir);
+        const files = new Set(
+          entries
+            .map((e) => e.name)
+            .filter((n): n is string => typeof n === 'string' && n.length > 0),
+        );
+        dirToFiles.set(dir, files);
+      } catch (e) {
+        dirToFiles.set(dir, new Set());
       }
+    }),
+  );
+
+  let existCount = 0;
+  let totalMediaCount = 0;
+  const missingTasks: CreateDownloadTaskParams[] = [];
+
+  for (const info of mediaInfos) {
+    totalMediaCount++;
+    const files = dirToFiles.get(info.dir);
+    if (files && files.has(info.fileName)) {
+      existCount++;
+    } else {
+      missingTasks.push({ media: info.media, post: info.post });
+    }
+  }
+
+  return { existCount, totalMediaCount, missingTasks };
+}
+
+// ===================== 预检 =====================
+async function preCheckWithMedias(
+  user: TwitterUser,
+  filter: CreationTask['filter'],
+): Promise<PreCheckResult> {
+  perf.mark('preCheck-start');
+  try {
+    await waitForApiSlot();
+    const { twitterPosts, cursor } = await getUserMedias(
+      user.id,
+      undefined,
+      PRE_CHECK_COUNT,
+    );
+    recordSuccess();
+
+    if (!twitterPosts.length) {
+      logFn('info', `预检: 用户 ${user.screenName} 无媒体`);
+      return {
+        success: true,
+        existCount: 0,
+        totalMediaCount: 0,
+        ratio: 0,
+        cache: { posts: [], cursor: cursor ?? null },
+        missingTasks: [],
+      };
     }
 
-    return failed;
-  };
+    perf.mark('preCheck-analyze-start');
+    const { existCount, totalMediaCount, missingTasks } = await analyzePosts(
+      twitterPosts,
+      filter,
+    );
+    perf.measure(
+      'preCheck-analyze',
+      'preCheck-analyze-start',
+      'preCheck-analyze-end',
+    );
 
-  const writeFailedUsersFile = async (failed: string[]): Promise<void> => {
-    if (!saveDirBase) return;
-    try {
-      const filePath = await path.join(saveDirBase, 'failed_users.txt');
-      if (failed.length === 0) {
+    const ratio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
+
+    logFn(
+      'info',
+      `预检: 前 ${twitterPosts.length} 条帖, 已下载 ${existCount}/${totalMediaCount} (${(ratio * 100).toFixed(1)}%), 缺失 ${missingTasks.length}`,
+    );
+    perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
+    return {
+      success: true,
+      existCount,
+      totalMediaCount,
+      ratio,
+      cache: { posts: twitterPosts, cursor: cursor ?? null },
+      missingTasks,
+    };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    if (isRateLimitError(msg)) {
+      recordRateLimit();
+      notifyRateLimitOnce(Math.ceil((globalCooldownUntil - Date.now()) / 1000));
+    }
+    logFn('error', `预检失败 (用户 ${user.screenName})`, err);
+    perf.log('preCheck failed');
+    return {
+      success: false,
+      existCount: 0,
+      totalMediaCount: 0,
+      ratio: 0,
+      cache: null,
+      missingTasks: [],
+    };
+  }
+}
+
+// ===================== 单源索引 =====================
+async function indexBySource(
+  user: TwitterUser,
+  source: 'medias' | 'tweets',
+  filter: CreationTask['filter'],
+  abortSignal: AbortSignal,
+  seenMediaIds: Set<string>,
+  initialPosts: any[] = [],
+  initialCursor: string | null | undefined = undefined,
+): Promise<IndexResult> {
+  const getListFn = source === 'medias' ? getUserMedias : getUserTweets;
+  const since = filter.dateRange?.[0] || dayjs.unix(0);
+  const until = filter.dateRange?.[1] || dayjs();
+
+  const tasks: CreateDownloadTaskParams[] = [];
+  let skipCount = 0;
+
+  const processPosts = async (posts: any[]): Promise<void> => {
+    const filteredPosts = posts.filter(
+      (p: any) =>
+        p.medias?.length &&
+        (!p.createdAt || p.createdAt.isAfter(since)) &&
+        (!p.createdAt || p.createdAt.isBefore(until)),
+    );
+    skipCount += posts.length - filteredPosts.length;
+
+    const settings = useSettingsStore.getState();
+    const mediaInfos: MediaInfo[] = [];
+    const dirSet = new Set<string>();
+
+    for (const post of filteredPosts) {
+      for (const media of post.medias!) {
+        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
+          continue;
+        const mediaId = media.id || `${post.id}-${media.url}`;
+        if (seenMediaIds.has(mediaId)) continue;
+        seenMediaIds.add(mediaId);
         try {
-          if (await fs.exists(filePath)) {
-            await fs.removeFile(filePath);
+          const templateData: FileNameTemplateData = { media, post };
+          const resolvedDirName = settings.download.dirTemplate
+            ? resolveVariables(settings.download.dirTemplate, templateData)
+            : '';
+          const dir = await path.join(
+            settings.download.saveDirBase,
+            resolvedDirName,
+          );
+          const fileName = resolveVariables(
+            settings.download.fileNameTemplate,
+            templateData,
+          );
+          mediaInfos.push({ post, media, dir, fileName });
+          dirSet.add(dir);
+        } catch (e: any) {
+          logFn('error', `准备失败: ${e.message}`);
+          skipCount++;
+        }
+      }
+    }
+
+    const dirToFiles = new Map<string, Set<string>>();
+    await Promise.all(
+      Array.from(dirSet).map(async (dir) => {
+        try {
+          if (!(await fs.exists(dir))) {
+            dirToFiles.set(dir, new Set());
+            return;
           }
-        } catch (_) {}
-        return;
+          const entries = await fs.readDir(dir);
+          dirToFiles.set(
+            dir,
+            new Set(
+              entries
+                .map((e) => e.name)
+                .filter(
+                  (n): n is string => typeof n === 'string' && n.length > 0,
+                ),
+            ),
+          );
+        } catch (e) {
+          dirToFiles.set(dir, new Set());
+        }
+      }),
+    );
+
+    for (const info of mediaInfos) {
+      const files = dirToFiles.get(info.dir);
+      if (
+        settings.download.sameFileSkip &&
+        files &&
+        files.has(info.fileName)
+      ) {
+        skipCount++;
+        continue;
       }
-      const content = failed.join('\n');
-      await fs.writeTextFile(filePath, content);
-    } catch (err) {
-      console.error('写入失败用户文件失败:', err);
+      tasks.push({ media: info.media, post: info.post });
     }
   };
 
-  const batchDownload = async () => {
-    if (isBatchRunning) {
-      message.warning('已有批量任务正在运行，请耐心等待');
-      return;
-    }
+  if (initialPosts.length > 0) {
+    await processPosts(initialPosts);
+  }
 
-    if (!cookieString) {
-      message.error('请先登录');
-      return;
-    }
+  let cursor: string | null | undefined = initialCursor;
+  let currentTime =
+    initialPosts.length > 0
+      ? R.last(initialPosts)?.createdAt || dayjs()
+      : dayjs();
 
+  while (cursor && !currentTime.isBefore(since)) {
+    if (abortSignal.aborted) return { tasks, skipCount, success: false };
+
+    await waitForApiSlot();
+    perf.mark(`api-${user.id}-${source}-start`);
+    let resp;
     try {
-      const filePath = await getListFilePath();
-      let content = '';
-      try {
-        content = await fs.readTextFile(filePath);
-      } catch (e) {}
-      let usernames = content
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
-
-      if (usernames.length === 0) {
-        message.warning('名单为空，请先添加用户');
-        return;
-      }
-
-      usernames = shuffleArray(usernames);
-
-      setIsBatchRunning(true);
-      const total = usernames.length;
-      setBatchProgress({
-        total,
-        completed: 0,
-        currentUser: '',
-      });
-
-      const successCounter = { count: 0 };
-      const timeoutCounter = { count: 0 };
-
-      let pending = await processBatch(
-        usernames,
-        successCounter,
-        timeoutCounter,
-        0,
-        total,
+      resp = await getListFn(user.id, cursor);
+      perf.measure(
+        `api-${user.id}-${source}`,
+        `api-${user.id}-${source}-start`,
+        `api-${user.id}-${source}-end`,
       );
-
-      for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
-        notification.info({
-          message: `第 ${round} 轮重试`,
-          description: `剩余 ${pending.length} 个用户，${ROUND_DELAY_MS / 1000} 秒后开始`,
-          duration: 4,
-        });
-        await delay(ROUND_DELAY_MS);
-
-        setBatchProgress({
-          total,
-          completed: total - pending.length,
-          currentUser: `重试第 ${round} 轮`,
-        });
-
-        const stillFailed = await processBatch(
-          pending,
-          successCounter,
-          timeoutCounter,
-          total - pending.length,
-          total,
+      recordSuccess();
+    } catch (apiErr: any) {
+      const errMsg =
+        typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
+      logFn('error', `[${source}] API请求失败: ${errMsg}`);
+      if (isRateLimitError(errMsg)) {
+        recordRateLimit();
+        notifyRateLimitOnce(
+          Math.ceil((globalCooldownUntil - Date.now()) / 1000),
         );
-        pending = stillFailed;
+        continue;
       }
-
-      setBatchProgress(null);
-      setIsBatchRunning(false);
-      await fetchUserListCount();
-
-      await writeFailedUsersFile(pending);
-
-      const extras: string[] = [];
-      if (timeoutCounter.count > 0)
-        extras.push(`超时 ${timeoutCounter.count} 个`);
-      if (pending.length > 0) {
-        extras.push(`失败 ${pending.length} 个`);
-      }
-      const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
-
-      if (pending.length > 0) {
-        notification.warning({
-          message: '批量下载任务创建完成',
-          description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 failed_users.txt`,
-          duration: 6,
-        });
-      } else {
-        notification.success({
-          message: '批量下载任务创建完成',
-          description: `成功 ${successCounter.count}${extraMsg}`,
-          duration: 4,
-        });
-      }
-    } catch (err) {
-      console.error('批量下载出错:', err);
-      setBatchProgress(null);
-      setIsBatchRunning(false);
-      message.error('批量下载发生未知错误');
+      throw apiErr;
     }
-  };
 
-  return (
-    <div className="flex flex-col h-screen overflow-hidden bg-white">
-      <PageHeader />
+    const posts = resp.twitterPosts;
+    if (posts.length > 0) {
+      await processPosts(posts);
+      const last = R.last(posts)?.createdAt;
+      if (last) currentTime = last;
+    }
+    cursor = resp.cursor;
+  }
 
-      <div className="shrink-0 px-4 pb-2">
-        <section aria-label="搜索用户">
-          <Space.Compact block>
-            <Input
-              disabled={userInfo.loading || !cookieString}
-              onPressEnter={() => startSearch(keyword)}
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder={cookieString ? '请输入用户 ID 或主页链接' : '请先登录'}
-              className="text-center"
-            />
-            <Button
-              disabled={!keyword || !cookieString}
-              loading={userInfo.loading}
-              onClick={() => startSearch(keyword)}
-              type="primary"
-            >
-              加载
-            </Button>
-          </Space.Compact>
-
-          {searchHistory.length > 0 && (
-            <div className="mt-1">
-              <div className="flex items-center justify-between h-5">
-                <Button
-                  type="text"
-                  size="small"
-                  className="text-gray-400 !p-0 flex items-center"
-                  onClick={() => setHistoryVisible(!historyVisible)}
-                >
-                  <HistoryOutlined className="mr-1 text-xs" />
-                  <span className="text-[11px]">
-                    搜索历史 ({searchHistory.length})
-                  </span>
-                  {historyVisible ? (
-                    <UpOutlined className="ml-1 text-[9px]" />
-                  ) : (
-                    <DownOutlined className="ml-1 text-[9px]" />
-                  )}
-                </Button>
-                {historyVisible && (
-                  <Button
-                    type="link"
-                    size="small"
-                    onClick={clearSearchHistory}
-                    className="!p-0 text-[11px] text-gray-400/60 hover:text-red-400"
-                  >
-                    清空
-                  </Button>
-                )}
-              </div>
-
-              {historyVisible && (
-                <div className="mt-1 overflow-x-auto scrollbar-hide bg-gray-50/50 p-1 rounded">
-                  <div className="flex flex-nowrap gap-x-4 items-center min-w-max">
-                    {searchHistory.map((sn) => (
-                      <Button
-                        key={sn}
-                        type="link"
-                        size="small"
-                        className="!p-0 text-[12px] text-blue-400 hover:text-blue-600 whitespace-nowrap"
-                        onClick={() => {
-                          setKeyword(sn);
-                          startSearch(sn);
-                        }}
-                      >
-                        {sn}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section className="mt-3">
-          <Card
-            size="small"
-            className="bg-blue-50/20 border-blue-100/50 shadow-sm"
-            bodyStyle={{ padding: '10px 16px' }}
-          >
-            <div className="flex items-center justify-between flex-wrap gap-y-2">
-              <div className="flex items-center">
-                <span className="text-gray-400 text-sm">名单用户：</span>
-                <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
-              </div>
-
-              <Space size="middle">
-                <Button
-                  icon={<FileTextOutlined />}
-                  onClick={() => setManageModalVisible(true)}
-                >
-                  管理名单
-                </Button>
-                <Button
-                  type="primary"
-                  danger
-                  icon={<CloudDownloadOutlined />}
-                  onClick={batchDownload}
-                  disabled={!!batchProgress || isBatchRunning}
-                  className="font-bold px-6"
-                >
-                  {isBatchRunning ? '批量下载中...' : '一键批量下载'}
-                </Button>
-              </Space>
-            </div>
-            {batchProgress && (
-              <div className="mt-3">
-                <Progress
-                  percent={Math.round(
-                    (batchProgress.completed / batchProgress.total) * 100,
-                  )}
-                  format={() =>
-                    `${batchProgress.completed}/${batchProgress.total}`
-                  }
-                  status="active"
-                />
-                <div className="text-xs text-gray-500 mt-1">
-                  正在处理：{batchProgress.currentUser}
-                </div>
-              </div>
-            )}
-          </Card>
-        </section>
-
-        {userInfo.data && (
-          <div className="mt-4">
-            <DownloadController />
-            <section
-              aria-label="用户信息"
-              className="bg-white border-[1px] border-gray-300 rounded-md mt-4 p-4"
-            >
-              <a
-                className="flex items-center"
-                href={
-                  userInfo.data.screenName
-                    ? buildUserUrl(userInfo.data.screenName)
-                    : '#'
-                }
-                target="_blank"
-                rel="noreferrer"
-              >
-                <Avatar src={userInfo.data.avatar} size={50} />
-                <div className="ml-3">
-                  <p className="text-base font-bold mb-0">
-                    {userInfo.data.name || '未知用户'}
-                    <span className="text-gray-400 font-normal ml-2 text-xs">
-                      ({userInfo.data.mediaCount || 0} 媒体)
-                    </span>
-                  </p>
-                  <p className="text-gray-400 text-sm">
-                    @{userInfo.data.screenName}
-                  </p>
-                </div>
-              </a>
-            </section>
-          </div>
-        )}
-      </div>
-
-      {userInfo.data && (
-        <section className="relative grow overflow-auto border-t border-gray-100">
-          <PostListGridView />
-        </section>
-      )}
-
-      <UserListManager
-        visible={manageModalVisible}
-        onClose={() => setManageModalVisible(false)}
-        onChanged={fetchUserListCount}
-      />
-    </div>
+  logFn(
+    'info',
+    `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`,
   );
-};
+  return { tasks, skipCount, success: true };
+}
+
+// ===================== 核心任务执行 =====================
+export async function runCreationTask(
+  task: CreationTask,
+  abortSignal: AbortSignal,
+): Promise<void> {
+  const taskId = task.id;
+  perf.mark(`runTask-${taskId}-start`);
+
+  const { filter, user } = task;
+
+  const preCheckResult = await preCheckWithMedias(user, filter);
+
+  if (!preCheckResult.success) {
+    logFn('warn', `用户 ${user.screenName} 预检失败，本次跳过`);
+    return;
+  }
+
+  if (preCheckResult.totalMediaCount === 0) {
+    logFn('info', `用户 ${user.screenName} 无媒体，跳过`);
+    return;
+  }
+
+  const ratioPercent = (preCheckResult.ratio * 100).toFixed(0);
+  const seenMediaIds = new Set<string>();
+  const allTasks: CreateDownloadTaskParams[] = [];
+  let totalSkip = 0;
+
+  if (preCheckResult.ratio >= SKIP_DOWNLOAD_RATIO) {
+    logFn(
+      'info',
+      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${SKIP_DOWNLOAD_RATIO * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
+    );
+    for (const t of preCheckResult.missingTasks) {
+      const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
+      seenMediaIds.add(mediaId);
+      allTasks.push(t);
+    }
+    totalSkip = preCheckResult.existCount;
+  } else {
+    logFn(
+      'info',
+      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${SKIP_DOWNLOAD_RATIO * 100}%)，开始全量索引`,
+    );
+
+    const mediaIndex = await indexBySource(
+      user,
+      'medias',
+      filter,
+      abortSignal,
+      seenMediaIds,
+      preCheckResult.cache?.posts || [],
+      preCheckResult.cache?.cursor ?? undefined,
+    );
+    allTasks.push(...mediaIndex.tasks);
+    totalSkip += mediaIndex.skipCount;
+
+    if (ENABLE_DUAL_SOURCE_SCAN) {
+      logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
+      const tweetsIndex = await indexBySource(
+        user,
+        'tweets',
+        filter,
+        abortSignal,
+        seenMediaIds,
+      );
+      allTasks.push(...tweetsIndex.tasks);
+      totalSkip += tweetsIndex.skipCount;
+    }
+  }
+
+  if (allTasks.length) {
+    perf.mark(`batchCreate-${taskId}-start`);
+    await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
+    perf.measure(
+      `batchCreate-${taskId}`,
+      `batchCreate-${taskId}-start`,
+      `batchCreate-${taskId}-end`,
+    );
+  }
+
+  useDownloadStore.getState().updateCreationTask({
+    ...task,
+    completeCount: allTasks.length,
+    skipCount: totalSkip,
+  });
+
+  logFn(
+    'info',
+    `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
+  );
+  antNotification.success({
+    message: `${user.screenName} 完成`,
+    description: `新增 ${allTasks.length}, 跳过 ${totalSkip}`,
+    duration: 3,
+  });
+  perf.measure(
+    `runTask-${taskId}`,
+    `runTask-${taskId}-start`,
+    `runTask-${taskId}-end`,
+  );
+}
+
+// ===================== 调度器 =====================
+export async function scheduleCreationTasks(): Promise<void> {
+  const state = useDownloadStore.getState();
+  const { creationTasks } = state;
+
+  if (Date.now() < globalCooldownUntil) {
+    const waitMs = globalCooldownUntil - Date.now() + 500;
+    setTimeout(scheduleCreationTasks, Math.min(waitMs, 30000));
+    return;
+  }
+
+  const active = creationTasks.filter((t) => t.status === 'active').length;
+  if (active >= MAX_ACTIVE_TASKS) {
+    setTimeout(scheduleCreationTasks, 1000);
+    return;
+  }
+  const nextTask = creationTasks.find((t) => t.status === 'waiting');
+  if (!nextTask) {
+    setTimeout(scheduleCreationTasks, 1000);
+    return;
+  }
+  const ctrl = creationTaskAbortControllerMap.get(nextTask.id);
+  if (!ctrl || ctrl.signal.aborted) {
+    state.removeCreationTask(nextTask.id);
+    setTimeout(scheduleCreationTasks, 500);
+    return;
+  }
+  state.updateCreationTask({ ...nextTask, status: 'active' });
+  try {
+    await runCreationTask(nextTask, ctrl.signal);
+  } catch (err: any) {
+    const errMsg = typeof err?.message === 'string' ? err.message : String(err);
+    logFn('error', `任务最终失败: ${errMsg}`);
+    if (!isRateLimitError(errMsg)) {
+      antNotification.error({
+        message: '任务失败',
+        description: '请检查网络或稍后重试',
+        duration: 3,
+      });
+    }
+  } finally {
+    state.removeCreationTask(nextTask.id);
+  }
+  setTimeout(scheduleCreationTasks, 2000);
+}
+
+setTimeout(scheduleCreationTasks, 10);
