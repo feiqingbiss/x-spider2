@@ -17,7 +17,9 @@ import { CreateDownloadTaskParams } from './types';
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
 const PRE_CHECK_COUNT = 20;
-const SKIP_DOWNLOAD_RATIO = 0.8;
+// 前 20 条已下载比例 < 15% → 认为是"新用户/长期未下载"，全量索引
+// 前 20 条已下载比例 >= 15% → 认为是"已在下载中的用户"，仅补全这 20 条里缺失的
+const LOW_EXIST_RATIO_THRESHOLD = 0.15;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
 // ===================== API 限流器（全局） =====================
@@ -480,21 +482,15 @@ export async function runCreationTask(
   const allTasks: CreateDownloadTaskParams[] = [];
   let totalSkip = 0;
 
-  if (preCheckResult.ratio >= SKIP_DOWNLOAD_RATIO) {
+  // 前 20 条已下载 < 15% → 认为是"新用户/长期未下载"，全量索引
+  // 前 20 条已下载 >= 15% → 仅补全这 20 条里缺失的
+  const isLowExist =
+    preCheckResult.ratio < LOW_EXIST_RATIO_THRESHOLD;
+
+  if (isLowExist) {
     logFn(
       'info',
-      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${SKIP_DOWNLOAD_RATIO * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
-    );
-    for (const t of preCheckResult.missingTasks) {
-      const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
-      seenMediaIds.add(mediaId);
-      allTasks.push(t);
-    }
-    totalSkip = preCheckResult.existCount;
-  } else {
-    logFn(
-      'info',
-      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${SKIP_DOWNLOAD_RATIO * 100}%)，开始全量索引`,
+      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)，开始全量索引`,
     );
 
     const mediaIndex = await indexBySource(
@@ -521,6 +517,17 @@ export async function runCreationTask(
       allTasks.push(...tweetsIndex.tasks);
       totalSkip += tweetsIndex.skipCount;
     }
+  } else {
+    logFn(
+      'info',
+      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${LOW_EXIST_RATIO_THRESHOLD * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
+    );
+    for (const t of preCheckResult.missingTasks) {
+      const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
+      seenMediaIds.add(mediaId);
+      allTasks.push(t);
+    }
+    totalSkip = preCheckResult.existCount;
   }
 
   if (allTasks.length) {
