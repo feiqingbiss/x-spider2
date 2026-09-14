@@ -29,6 +29,35 @@ const RETRY_DELAY_MS = 8000;
 const ROUND_DELAY_MS = 30000;
 const RETRY_ROUNDS = 2;
 
+// 用户友好错误信息
+const userFriendlyError = (err: any): string => {
+  const msg = (err?.message || err?.toString() || '').toLowerCase();
+  if (
+    msg.includes('status=429') ||
+    msg.includes('rate limit') ||
+    msg.includes('too many requests')
+  ) {
+    return '请求过于频繁，请稍后再试';
+  }
+  if (msg.includes('status=404') || msg.includes('找不到该用户')) {
+    return '用户不存在或访问受限';
+  }
+  if (msg.includes('超时') || msg.includes('timeout')) {
+    return '网络请求超时';
+  }
+  if (
+    msg.includes('tls handshake') ||
+    msg.includes('error decoding response body') ||
+    msg.includes('error sending request') ||
+    msg.includes('network') ||
+    msg.includes('eof') ||
+    msg.includes('10053')
+  ) {
+    return '网络连接异常，请检查代理配置';
+  }
+  return '加载失败，请稍后重试';
+};
+
 const shuffleArray = <T,>(arr: T[]): T[] => {
   const shuffled = [...arr];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -168,7 +197,6 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  // 处理单个用户
   const processOneUser = async (
     name: string,
     successCounter: { count: number },
@@ -184,51 +212,41 @@ export const Homepage: React.FC = () => {
         successCounter.count++;
         return true;
       } catch (err: any) {
-        const errMsg =
-          err?.message ||
-          (typeof err === 'string' ? err : '') ||
-          (err?.name ? `${err.name}` : '') ||
-          '未知错误';
-
+        const errMsg = err?.message || String(err);
         userLog.warn(
           `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`,
-          { message: errMsg, name: err?.name, stack: err?.stack },
+          { message: errMsg },
         );
 
+        // 限流：等待更久；中间不弹窗，只在首次提示
         if (isRateLimitError(err)) {
           const waitMs = RETRY_DELAY_MS * attempt * 2;
-          notification.warning({
-            message: `用户 ${name} 触发限流，等待 ${Math.round(waitMs / 1000)} 秒...`,
-            description: errMsg,
-          });
+          if (attempt === 1) {
+            notification.warning({
+              message: '请求过于频繁',
+              description: `已自动暂停 ${Math.round(waitMs / 1000)} 秒后继续`,
+              duration: 4,
+            });
+          }
           await delay(waitMs);
           continue;
         }
 
-        if (errMsg.includes('超时')) {
-          if (attempt < MAX_RETRIES) {
-            notification.warning({
-              message: `用户 ${name} 请求超时 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
-              description: errMsg,
-            });
-            await delay(RETRY_DELAY_MS);
-          } else {
-            timeoutCounter.count++;
-          }
-        } else {
-          if (attempt < MAX_RETRIES) {
-            notification.warning({
-              message: `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})，${RETRY_DELAY_MS / 1000}秒后重试...`,
-              description: errMsg,
-            });
-            await delay(RETRY_DELAY_MS);
-          } else {
-            notification.warning({
-              message: `用户 ${name} 加载失败，已跳过`,
-              description: errMsg,
-            });
-          }
+        // 中间重试不弹窗
+        if (attempt < MAX_RETRIES) {
+          await delay(RETRY_DELAY_MS);
+          continue;
         }
+
+        // 最终失败才提示
+        if (errMsg.includes('超时')) {
+          timeoutCounter.count++;
+        }
+        notification.warning({
+          message: `用户 ${name} 加载失败`,
+          description: userFriendlyError(err),
+          duration: 4,
+        });
       }
     }
     return false;
@@ -259,9 +277,7 @@ export const Homepage: React.FC = () => {
           });
 
           const ok = await processOneUser(name, successCounter, timeoutCounter);
-          if (!ok) {
-            failed.push(name);
-          }
+          if (!ok) failed.push(name);
 
           setBatchProgress({
             total: progressTotal,
@@ -356,9 +372,12 @@ export const Homepage: React.FC = () => {
       );
 
       for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
-        message.info(
-          `第 ${round} 轮重试，剩余 ${pending.length} 个用户（${ROUND_DELAY_MS / 1000}秒后开始）`,
-        );
+        // 只在重试轮开始时提示一次
+        notification.info({
+          message: `第 ${round} 轮重试`,
+          description: `剩余 ${pending.length} 个用户，${ROUND_DELAY_MS / 1000} 秒后开始`,
+          duration: 4,
+        });
         await delay(ROUND_DELAY_MS);
 
         setBatchProgress({
@@ -387,19 +406,22 @@ export const Homepage: React.FC = () => {
       if (timeoutCounter.count > 0)
         extras.push(`超时 ${timeoutCounter.count} 个`);
       if (pending.length > 0) {
-        extras.push(`重试后仍失败 ${pending.length} 个`);
+        extras.push(`失败 ${pending.length} 个`);
       }
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
 
       if (pending.length > 0) {
-        message.warning(
-          `批量下载完成：成功 ${successCounter.count}，失败 ${pending.length}${extraMsg}。失败用户已保存到 ${failedFilePath || '下载目录的 failed_users.txt'}。`,
-        );
-        console.warn('最终失败的用户（保留在名单中）:', pending);
+        notification.warning({
+          message: '批量下载任务创建完成',
+          description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 failed_users.txt`,
+          duration: 6,
+        });
       } else {
-        message.success(
-          `批量下载任务创建完成：成功 ${successCounter.count}${extraMsg}`,
-        );
+        notification.success({
+          message: '批量下载任务创建完成',
+          description: `成功 ${successCounter.count}${extraMsg}`,
+          duration: 4,
+        });
       }
     } catch (err) {
       console.error('批量下载出错:', err);
