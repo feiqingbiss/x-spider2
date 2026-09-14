@@ -7,7 +7,7 @@ import { TwitterUser } from '../../interfaces/TwitterUser';
 import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
 import { useDownloadStore } from './store';
-import { prepareDownloadTask, logFn } from './utils';
+import { logFn } from './utils';
 import { perf } from './performance';
 import { delay } from '../../utils';
 import { resolveVariables } from '../../utils/file-name-template';
@@ -39,7 +39,6 @@ let successStreak = 0;
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
 
-  // 首次请求无需等待（应用刚启动，之前没请求过）
   if (lastApiCallTime === 0 && now >= globalCooldownUntil) {
     lastApiCallTime = now;
     return;
@@ -125,14 +124,6 @@ interface PreCheckResult {
   missingTasks: CreateDownloadTaskParams[];
 }
 
-/**
- * 批量分析媒体文件是否已下载（性能优化版）
- * 核心思路：
- *  1. 先收集所有媒体的预期 (dir, fileName)
- *  2. 按目录分组
- *  3. 每个目录只调用一次 fs.readDir（IPC 从 N 次降到 目录数 次）
- *  4. 内存比对
- */
 async function analyzePosts(
   posts: any[],
   filter: CreationTask['filter'],
@@ -146,7 +137,6 @@ async function analyzePosts(
   const since = filter.dateRange?.[0] || dayjs.unix(0);
   const until = filter.dateRange?.[1] || dayjs();
 
-  // ============ 第一步：收集所有媒体的路径信息 ============
   interface MediaInfo {
     post: any;
     media: any;
@@ -193,7 +183,6 @@ async function analyzePosts(
     }
   }
 
-  // ============ 第二步：并行读取每个目录的文件列表 ============
   const dirToFiles = new Map<string, Set<string>>();
   await Promise.all(
     Array.from(dirSet).map(async (dir) => {
@@ -215,7 +204,6 @@ async function analyzePosts(
     }),
   );
 
-  // ============ 第三步：内存比对 ============
   let existCount = 0;
   let totalMediaCount = 0;
   const missingTasks: CreateDownloadTaskParams[] = [];
@@ -233,7 +221,6 @@ async function analyzePosts(
   return { existCount, totalMediaCount, missingTasks };
 }
 
-// 预检：抓取前 PRE_CHECK_COUNT 条媒体，判断已下载比例
 async function preCheckWithMedias(
   user: TwitterUser,
   filter: CreationTask['filter'],
@@ -305,7 +292,6 @@ async function preCheckWithMedias(
   }
 }
 
-// 单个源的索引
 interface IndexResult {
   tasks: CreateDownloadTaskParams[];
   skipCount: number;
@@ -328,9 +314,6 @@ async function indexBySource(
   const tasks: CreateDownloadTaskParams[] = [];
   let skipCount = 0;
 
-  /**
-   * 处理一批帖子：先收集所有媒体 → 批量读取目录 → 内存比对 → 生成 tasks
-   */
   const processPosts = async (posts: any[]): Promise<void> => {
     const filteredPosts = posts.filter(
       (p: any) =>
@@ -380,7 +363,6 @@ async function indexBySource(
       }
     }
 
-    // 批量读取目录
     const dirToFiles = new Map<string, Set<string>>();
     await Promise.all(
       Array.from(dirSet).map(async (dir) => {
@@ -406,7 +388,6 @@ async function indexBySource(
       }),
     );
 
-    // 内存比对，生成待下载任务
     for (const info of mediaInfos) {
       const files = dirToFiles.get(info.dir);
       if (
@@ -503,7 +484,6 @@ export async function runCreationTask(
   let totalSkip = 0;
 
   if (preCheckResult.ratio >= SKIP_DOWNLOAD_RATIO) {
-    // 场景 A：≥ 80%，只补全预检范围内缺失
     logFn(
       'info',
       `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (≥${SKIP_DOWNLOAD_RATIO * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
@@ -515,7 +495,6 @@ export async function runCreationTask(
     }
     totalSkip = preCheckResult.existCount;
   } else {
-    // 场景 B：< 80%，全量遍历
     logFn(
       'info',
       `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${SKIP_DOWNLOAD_RATIO * 100}%)，开始全量索引`,
