@@ -29,7 +29,8 @@ const RETRY_DELAY_MS = 8000;
 const ROUND_DELAY_MS = 30000;
 const RETRY_ROUNDS = 2;
 
-// 用户友好错误信息
+const FAILED_USERS_FILE = 'failed_users.txt';
+
 const userFriendlyError = (err: any): string => {
   const msg = (err?.message || err?.toString() || '').toLowerCase();
   if (
@@ -213,12 +214,10 @@ export const Homepage: React.FC = () => {
         return true;
       } catch (err: any) {
         const errMsg = err?.message || String(err);
-        userLog.warn(
-          `用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`,
-          { message: errMsg },
-        );
+        userLog.warn(`用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`, {
+          message: errMsg,
+        });
 
-        // 限流：等待更久；中间不弹窗，只在首次提示
         if (isRateLimitError(err)) {
           const waitMs = RETRY_DELAY_MS * attempt * 2;
           if (attempt === 1) {
@@ -232,13 +231,11 @@ export const Homepage: React.FC = () => {
           continue;
         }
 
-        // 中间重试不弹窗
         if (attempt < MAX_RETRIES) {
           await delay(RETRY_DELAY_MS);
           continue;
         }
 
-        // 最终失败才提示
         if (errMsg.includes('超时')) {
           timeoutCounter.count++;
         }
@@ -295,26 +292,32 @@ export const Homepage: React.FC = () => {
     return failed;
   };
 
-  const writeFailedUsersFile = async (
-    failed: string[],
-  ): Promise<string | null> => {
-    if (!saveDirBase) return null;
+  /**
+   * 把失败用户写入 下载目录/failed_users.txt
+   * 无返回值，失败仅记录 console
+   */
+  const writeFailedUsersFile = async (failed: string[]): Promise<void> => {
+    if (!saveDirBase) {
+      console.warn('未配置下载目录，跳过写入 failed_users.txt');
+      return;
+    }
     try {
-      const filePath = await path.join(saveDirBase, 'failed_users.txt');
+      const filePath = await path.join(saveDirBase, FAILED_USERS_FILE);
       if (failed.length === 0) {
+        // 无失败用户：删除旧文件，避免过期数据误导
         try {
           if (await fs.exists(filePath)) {
             await fs.removeFile(filePath);
           }
-        } catch (_) {}
-        return null;
+        } catch (e) {
+          console.warn('删除旧 failed_users.txt 失败', e);
+        }
+        return;
       }
-      const content = failed.join('\n');
-      await fs.writeTextFile(filePath, content);
-      return filePath;
+      await fs.writeTextFile(filePath, failed.join('\n'));
+      console.log(`已写入失败用户到 ${filePath}`);
     } catch (err) {
       console.error('写入失败用户文件失败:', err);
-      return null;
     }
   };
 
@@ -372,7 +375,6 @@ export const Homepage: React.FC = () => {
       );
 
       for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
-        // 只在重试轮开始时提示一次
         notification.info({
           message: `第 ${round} 轮重试`,
           description: `剩余 ${pending.length} 个用户，${ROUND_DELAY_MS / 1000} 秒后开始`,
@@ -400,11 +402,13 @@ export const Homepage: React.FC = () => {
       setIsBatchRunning(false);
       await fetchUserListCount();
 
-      const failedFilePath = await writeFailedUsersFile(pending);
+      // 写入失败用户文件（不接收返回值）
+      await writeFailedUsersFile(pending);
 
       const extras: string[] = [];
-      if (timeoutCounter.count > 0)
+      if (timeoutCounter.count > 0) {
         extras.push(`超时 ${timeoutCounter.count} 个`);
+      }
       if (pending.length > 0) {
         extras.push(`失败 ${pending.length} 个`);
       }
@@ -413,7 +417,7 @@ export const Homepage: React.FC = () => {
       if (pending.length > 0) {
         notification.warning({
           message: '批量下载任务创建完成',
-          description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 failed_users.txt`,
+          description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 ${FAILED_USERS_FILE}`,
           duration: 6,
         });
       } else {
