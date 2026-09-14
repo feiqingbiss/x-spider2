@@ -1,5 +1,15 @@
 /* eslint-disable react/prop-types */
-import { Avatar, Button, Input, Space, App, Card, Progress } from 'antd';
+import {
+  Avatar,
+  Button,
+  Input,
+  Space,
+  App,
+  Card,
+  Progress,
+  Switch,
+  Tooltip,
+} from 'antd';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   HistoryOutlined,
@@ -7,6 +17,7 @@ import {
   UpOutlined,
   FileTextOutlined,
   CloudDownloadOutlined,
+  ThunderboltFilled,
 } from '@ant-design/icons';
 import { PageHeader } from '../components/PageHeader';
 import { PostListGridView } from '../components/homepage/PostListGridView';
@@ -119,11 +130,15 @@ export const Homepage: React.FC = () => {
     addSearchHistory,
     clearSearchHistory,
     cookieString,
+    forceFullScan,
+    setForceFullScan,
   } = useAppStateStore((s) => ({
     searchHistory: s.searchHistory,
     addSearchHistory: s.addSearchHistory,
     clearSearchHistory: s.clearSearchHistory,
     cookieString: s.cookieString,
+    forceFullScan: s.forceFullScan,
+    setForceFullScan: s.setForceFullScan,
   }));
 
   const searchAbortControllerRef = useRef<AbortController>();
@@ -292,10 +307,6 @@ export const Homepage: React.FC = () => {
     return failed;
   };
 
-  /**
-   * 把失败用户写入 下载目录/failed_users.txt
-   * 无返回值，失败仅记录 console
-   */
   const writeFailedUsersFile = async (failed: string[]): Promise<void> => {
     if (!saveDirBase) {
       console.warn('未配置下载目录，跳过写入 failed_users.txt');
@@ -304,7 +315,6 @@ export const Homepage: React.FC = () => {
     try {
       const filePath = await path.join(saveDirBase, FAILED_USERS_FILE);
       if (failed.length === 0) {
-        // 无失败用户：删除旧文件，避免过期数据误导
         try {
           if (await fs.exists(filePath)) {
             await fs.removeFile(filePath);
@@ -366,6 +376,14 @@ export const Homepage: React.FC = () => {
       const successCounter = { count: 0 };
       const timeoutCounter = { count: 0 };
 
+      if (forceFullScan) {
+        notification.info({
+          message: '已开启完整遍历',
+          description: '本次批量下载将忽略预检结果，遍历所有用户的历史帖子',
+          duration: 4,
+        });
+      }
+
       let pending = await processBatch(
         usernames,
         successCounter,
@@ -402,7 +420,6 @@ export const Homepage: React.FC = () => {
       setIsBatchRunning(false);
       await fetchUserListCount();
 
-      // 写入失败用户文件（不接收返回值）
       await writeFailedUsersFile(pending);
 
       const extras: string[] = [];
@@ -527,13 +544,49 @@ export const Homepage: React.FC = () => {
                 <b className="text-lg text-blue-500 ml-1">{userListCount}</b>
               </div>
 
-              <Space size="middle">
+              <Space size="middle" align="center">
                 <Button
                   icon={<FileTextOutlined />}
                   onClick={() => setManageModalVisible(true)}
                 >
                   管理名单
                 </Button>
+
+                <Tooltip
+                  title={
+                    forceFullScan
+                      ? '当前：完整遍历。将忽略预检结果，遍历用户所有历史帖子（速度较慢，但最全）'
+                      : '当前：快速补全。前 20 条已下载 ≥ 15% 时仅补缺失；< 15% 时全量遍历'
+                  }
+                >
+                  <div
+                    className="flex items-center cursor-pointer select-none px-2"
+                    onClick={() => setForceFullScan(!forceFullScan)}
+                  >
+                    <Switch
+                      size="small"
+                      checked={forceFullScan}
+                      onChange={(v) => setForceFullScan(v)}
+                    />
+                    <span
+                      className={
+                        forceFullScan
+                          ? 'ml-2 text-orange-500 font-bold text-xs'
+                          : 'ml-2 text-gray-400 text-xs'
+                      }
+                    >
+                      {forceFullScan ? (
+                        <>
+                          <ThunderboltFilled className="mr-1" />
+                          完整遍历
+                        </>
+                      ) : (
+                        '快速补全'
+                      )}
+                    </span>
+                  </div>
+                </Tooltip>
+
                 <Button
                   type="primary"
                   danger

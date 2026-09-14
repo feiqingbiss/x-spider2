@@ -20,11 +20,14 @@ export interface AppStateStore {
   setLatestUrl: (url: string) => void;
   systemProxyUrl: string;
   setSystemProxyUrl: (url: string) => void;
+  // 强制完整遍历开关
+  forceFullScan: boolean;
+  setForceFullScan: (v: boolean) => void;
 }
 
 async function getListFilePath(): Promise<string> {
   const settings = useSettingsStore.getState();
-  const baseDir = settings.download.saveDirBase || await appDataDir();
+  const baseDir = settings.download.saveDirBase || (await appDataDir());
   return await join(baseDir, 'search-user-name.txt');
 }
 
@@ -32,25 +35,32 @@ const syncHistoryToFile = async (names: string[]) => {
   try {
     if (names.length === 0) return;
     const filePath = await getListFilePath();
-    let existingContent = "";
-    try { existingContent = await readTextFile(filePath); } catch (e) {}
+    let existingContent = '';
+    try {
+      existingContent = await readTextFile(filePath);
+    } catch (e) {}
 
-    const existingNames = existingContent.split('\n')
-      .map(line => {
+    const existingNames = existingContent
+      .split('\n')
+      .map((line) => {
         let name = line.trim();
         name = name.replace(/^https?:\/\/x\.com\/?/i, '');
         name = name.replace(/^@/, '');
         return name.trim();
       })
-      .filter(name => name.length > 0);
+      .filter((name) => name.length > 0);
 
-    const combined = Array.from(new Set([...existingNames, ...names])).filter(n => n.length > 0);
-    let content = "";
+    const combined = Array.from(new Set([...existingNames, ...names])).filter(
+      (n) => n.length > 0,
+    );
+    let content = '';
     for (const name of combined) {
       content += `https://x.com/${name.trim()}\n`;
     }
     await writeTextFile(filePath, content.trim());
-  } catch (err) { console.error('[Sync] Error:', err); }
+  } catch (err) {
+    console.error('[Sync] Error:', err);
+  }
 };
 
 export const useAppStateStore = create(
@@ -80,10 +90,15 @@ export const useAppStateStore = create(
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            let name = trimmed.replace(/^https?:\/\/x\.com\/?/i, '').replace(/^@/, '').trim();
+            let name = trimmed
+              .replace(/^https?:\/\/x\.com\/?/i, '')
+              .replace(/^@/, '')
+              .trim();
             if (name) importedNames.push(name);
           }
-          set({ searchHistory: Array.from(new Set(importedNames)).slice(0, 10) });
+          set({
+            searchHistory: Array.from(new Set(importedNames)).slice(0, 10),
+          });
         } catch (err) {}
       },
       latestVersion: PACKAGE_JSON_VERSION,
@@ -94,7 +109,10 @@ export const useAppStateStore = create(
       setLatestUrl: (url) => set({ latestUrl: url }),
       systemProxyUrl: '',
       setSystemProxyUrl: (url) => set({ systemProxyUrl: url }),
+      // 强制完整遍历：默认 false
+      forceFullScan: false,
+      setForceFullScan: (v) => set({ forceFullScan: v }),
     }),
-    { name: 'app-state', storage: createTauriFileStorage(), version: 1 }
-  )
+    { name: 'app-state', storage: createTauriFileStorage(), version: 1 },
+  ),
 );

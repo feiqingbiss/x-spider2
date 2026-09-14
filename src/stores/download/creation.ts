@@ -6,6 +6,7 @@ import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
 import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
+import { useAppStateStore } from '../app-state';
 import { useDownloadStore } from './store';
 import { logFn } from './utils';
 import { perf } from './performance';
@@ -17,8 +18,8 @@ import { CreateDownloadTaskParams } from './types';
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
 const PRE_CHECK_COUNT = 20;
-// 前 20 条已下载比例 < 15% → 认为是"新用户/长期未下载"，全量索引
-// 前 20 条已下载比例 >= 15% → 认为是"已在下载中的用户"，仅补全这 20 条里缺失的
+// 前 20 条已下载比例 < 15% → 全量索引
+// 前 20 条已下载比例 >= 15% → 仅补全前 20 条里缺失的
 const LOW_EXIST_RATIO_THRESHOLD = 0.15;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
@@ -477,21 +478,16 @@ export async function runCreationTask(
     return;
   }
 
+  // 读取开关（独立于 Homepage，单独下载时也生效）
+  const forceFullScan = useAppStateStore.getState().forceFullScan;
+
   const ratioPercent = (preCheckResult.ratio * 100).toFixed(0);
   const seenMediaIds = new Set<string>();
   const allTasks: CreateDownloadTaskParams[] = [];
   let totalSkip = 0;
 
-  // 前 20 条已下载 < 15% → 认为是"新用户/长期未下载"，全量索引
-  // 前 20 条已下载 >= 15% → 仅补全这 20 条里缺失的
-  const isLowExist =
-    preCheckResult.ratio < LOW_EXIST_RATIO_THRESHOLD;
-
-  if (isLowExist) {
-    logFn(
-      'info',
-      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)，开始全量索引`,
-    );
+  const doFullScan = async (reason: string) => {
+    logFn('info', `用户 ${user.screenName} ${reason}，开始全量索引`);
 
     const mediaIndex = await indexBySource(
       user,
@@ -517,6 +513,14 @@ export async function runCreationTask(
       allTasks.push(...tweetsIndex.tasks);
       totalSkip += tweetsIndex.skipCount;
     }
+  };
+
+  if (forceFullScan) {
+    await doFullScan('[强制完整遍历]');
+  } else if (preCheckResult.ratio < LOW_EXIST_RATIO_THRESHOLD) {
+    await doFullScan(
+      `前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)`,
+    );
   } else {
     logFn(
       'info',
