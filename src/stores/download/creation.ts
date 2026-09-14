@@ -16,9 +16,9 @@ import { CreateDownloadTaskParams } from './types';
 
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
-const PRE_CHECK_COUNT = 20;              // 预检前 20 条
-const SKIP_DOWNLOAD_RATIO = 0.8;         // 已下载比例 ≥ 80% 则只补全缺少的
-const ENABLE_DUAL_SOURCE_SCAN = true;    // 全量索引时启用双源
+const PRE_CHECK_COUNT = 20;
+const SKIP_DOWNLOAD_RATIO = 0.8;
+const ENABLE_DUAL_SOURCE_SCAN = true;
 
 // ===================== API 限流器（全局） =====================
 const MIN_API_INTERVAL_MS = 7000;
@@ -28,7 +28,6 @@ const MAX_COOLDOWN_MS = 10 * 60 * 1000;
 const SUCCESS_THRESHOLD = 5;
 const WARMUP_COOLDOWN_MS = 60000;
 
-// 限流提示节流（1 分钟最多提示一次）
 const RATE_LIMIT_NOTIFY_INTERVAL = 60000;
 let lastRateLimitNotifyTime = 0;
 
@@ -39,6 +38,13 @@ let successStreak = 0;
 
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
+
+  // 首次请求无需等待（应用刚启动，之前没请求过）
+  if (lastApiCallTime === 0 && now >= globalCooldownUntil) {
+    lastApiCallTime = now;
+    return;
+  }
+
   if (now < globalCooldownUntil) {
     const waitMs = globalCooldownUntil - now;
     logFn('warn', `[限流] 全局冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒...`);
@@ -116,10 +122,17 @@ interface PreCheckResult {
   totalMediaCount: number;
   ratio: number;
   cache: { posts: any[]; cursor: string | null } | null;
-  missingTasks: CreateDownloadTaskParams[];  // 预检范围内缺失的媒体任务
+  missingTasks: CreateDownloadTaskParams[];
 }
 
-// 计算某个帖子列表里有多少媒体已下载，并收集缺失的
+/**
+ * 批量分析媒体文件是否已下载（性能优化版）
+ * 核心思路：
+ *  1. 先收集所有媒体的预期 (dir, fileName)
+ *  2. 按目录分组
+ *  3. 每个目录只调用一次 fs.readDir（IPC 从 N 次降到 目录数 次）
+ *  4. 内存比对
+ */
 async function analyzePosts(
   posts: any[],
   filter: CreationTask['filter'],
@@ -133,13 +146,18 @@ async function analyzePosts(
   const since = filter.dateRange?.[0] || dayjs.unix(0);
   const until = filter.dateRange?.[1] || dayjs();
 
-  let existCount = 0;
-  let totalMediaCount = 0;
-  const missingTasks: CreateDownloadTaskParams[] = [];
+  // ============ 第一步：收集所有媒体的路径信息 ============
+  interface MediaInfo {
+    post: any;
+    media: any;
+    dir: string;
+    fileName: string;
+  }
+  const mediaInfos: MediaInfo[] = [];
+  const dirSet = new Set<string>();
 
   for (const post of posts) {
     if (!post.medias?.length) continue;
-    // 时间范围过滤
     if (post.createdAt) {
       if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) {
         continue;
@@ -154,7 +172,6 @@ async function analyzePosts(
         if (seenMediaIds.has(mediaId)) continue;
         seenMediaIds.add(mediaId);
       }
-      totalMediaCount++;
       try {
         const templateData: FileNameTemplateData = { media, post };
         const resolvedDirName = settings.download.dirTemplate
@@ -168,15 +185,48 @@ async function analyzePosts(
           settings.download.fileNameTemplate,
           templateData,
         );
-        const filePath = await path.join(dir, fileName);
-        if (await fs.exists(filePath)) {
-          existCount++;
-        } else {
-          missingTasks.push({ media, post });
-        }
+        mediaInfos.push({ post, media, dir, fileName });
+        dirSet.add(dir);
       } catch (e) {
         // ignore
       }
+    }
+  }
+
+  // ============ 第二步：并行读取每个目录的文件列表 ============
+  const dirToFiles = new Map<string, Set<string>>();
+  await Promise.all(
+    Array.from(dirSet).map(async (dir) => {
+      try {
+        if (!(await fs.exists(dir))) {
+          dirToFiles.set(dir, new Set());
+          return;
+        }
+        const entries = await fs.readDir(dir);
+        const files = new Set(
+          entries
+            .map((e) => e.name)
+            .filter((n): n is string => typeof n === 'string' && n.length > 0),
+        );
+        dirToFiles.set(dir, files);
+      } catch (e) {
+        dirToFiles.set(dir, new Set());
+      }
+    }),
+  );
+
+  // ============ 第三步：内存比对 ============
+  let existCount = 0;
+  let totalMediaCount = 0;
+  const missingTasks: CreateDownloadTaskParams[] = [];
+
+  for (const info of mediaInfos) {
+    totalMediaCount++;
+    const files = dirToFiles.get(info.dir);
+    if (files && files.has(info.fileName)) {
+      existCount++;
+    } else {
+      missingTasks.push({ media: info.media, post: info.post });
     }
   }
 
@@ -210,10 +260,17 @@ async function preCheckWithMedias(
       };
     }
 
+    perf.mark('preCheck-analyze-start');
     const { existCount, totalMediaCount, missingTasks } = await analyzePosts(
       twitterPosts,
       filter,
     );
+    perf.measure(
+      'preCheck-analyze',
+      'preCheck-analyze-start',
+      'preCheck-analyze-end',
+    );
+
     const ratio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
 
     logFn(
@@ -271,6 +328,9 @@ async function indexBySource(
   const tasks: CreateDownloadTaskParams[] = [];
   let skipCount = 0;
 
+  /**
+   * 处理一批帖子：先收集所有媒体 → 批量读取目录 → 内存比对 → 生成 tasks
+   */
   const processPosts = async (posts: any[]): Promise<void> => {
     const filteredPosts = posts.filter(
       (p: any) =>
@@ -281,6 +341,16 @@ async function indexBySource(
     skipCount += posts.length - filteredPosts.length;
 
     const settings = useSettingsStore.getState();
+
+    interface MediaInfo {
+      post: any;
+      media: any;
+      dir: string;
+      fileName: string;
+    }
+    const mediaInfos: MediaInfo[] = [];
+    const dirSet = new Set<string>();
+
     for (const post of filteredPosts) {
       for (const media of post.medias!) {
         if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
@@ -289,18 +359,65 @@ async function indexBySource(
         if (seenMediaIds.has(mediaId)) continue;
         seenMediaIds.add(mediaId);
         try {
-          const dlTask = await prepareDownloadTask({ post, media });
-          const filePath = await path.join(dlTask.dir, dlTask.fileName);
-          if (settings.download.sameFileSkip && (await fs.exists(filePath))) {
-            skipCount++;
-            continue;
-          }
-          tasks.push({ media, post });
+          const templateData: FileNameTemplateData = { media, post };
+          const resolvedDirName = settings.download.dirTemplate
+            ? resolveVariables(settings.download.dirTemplate, templateData)
+            : '';
+          const dir = await path.join(
+            settings.download.saveDirBase,
+            resolvedDirName,
+          );
+          const fileName = resolveVariables(
+            settings.download.fileNameTemplate,
+            templateData,
+          );
+          mediaInfos.push({ post, media, dir, fileName });
+          dirSet.add(dir);
         } catch (e: any) {
           logFn('error', `准备失败: ${e.message}`);
           skipCount++;
         }
       }
+    }
+
+    // 批量读取目录
+    const dirToFiles = new Map<string, Set<string>>();
+    await Promise.all(
+      Array.from(dirSet).map(async (dir) => {
+        try {
+          if (!(await fs.exists(dir))) {
+            dirToFiles.set(dir, new Set());
+            return;
+          }
+          const entries = await fs.readDir(dir);
+          dirToFiles.set(
+            dir,
+            new Set(
+              entries
+                .map((e) => e.name)
+                .filter(
+                  (n): n is string => typeof n === 'string' && n.length > 0,
+                ),
+            ),
+          );
+        } catch (e) {
+          dirToFiles.set(dir, new Set());
+        }
+      }),
+    );
+
+    // 内存比对，生成待下载任务
+    for (const info of mediaInfos) {
+      const files = dirToFiles.get(info.dir);
+      if (
+        settings.download.sameFileSkip &&
+        files &&
+        files.has(info.fileName)
+      ) {
+        skipCount++;
+        continue;
+      }
+      tasks.push({ media: info.media, post: info.post });
     }
   };
 
@@ -368,7 +485,6 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  // 预检
   const preCheckResult = await preCheckWithMedias(user, filter);
 
   if (!preCheckResult.success) {
@@ -387,12 +503,11 @@ export async function runCreationTask(
   let totalSkip = 0;
 
   if (preCheckResult.ratio >= SKIP_DOWNLOAD_RATIO) {
-    // ===== 场景 A：已下载 ≥ 80%，只补全预检范围内的缺失 =====
+    // 场景 A：≥ 80%，只补全预检范围内缺失
     logFn(
       'info',
       `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (≥${SKIP_DOWNLOAD_RATIO * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
     );
-    // 添加到去重集合
     for (const t of preCheckResult.missingTasks) {
       const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
       seenMediaIds.add(mediaId);
@@ -400,13 +515,12 @@ export async function runCreationTask(
     }
     totalSkip = preCheckResult.existCount;
   } else {
-    // ===== 场景 B：< 80%，全量遍历 =====
+    // 场景 B：< 80%，全量遍历
     logFn(
       'info',
       `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${SKIP_DOWNLOAD_RATIO * 100}%)，开始全量索引`,
     );
 
-    // 媒体源（复用预检数据）
     const mediaIndex = await indexBySource(
       user,
       'medias',
@@ -419,7 +533,6 @@ export async function runCreationTask(
     allTasks.push(...mediaIndex.tasks);
     totalSkip += mediaIndex.skipCount;
 
-    // 帖子源（补齐媒体源遗漏）
     if (ENABLE_DUAL_SOURCE_SCAN) {
       logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
       const tweetsIndex = await indexBySource(
@@ -434,7 +547,6 @@ export async function runCreationTask(
     }
   }
 
-  // 一次性创建下载任务
   if (allTasks.length) {
     perf.mark(`batchCreate-${taskId}-start`);
     await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
