@@ -5,9 +5,12 @@ import { DownloadTask } from '../../interfaces/DownloadTask';
 import { notification } from '@tauri-apps/api';
 import { notification as antNotification } from 'antd';
 import { DownloadStore } from './types';
-import { prepareDownloadTask, mergeAriaStatusToDownloadTask, logFn } from './utils';
+import {
+  prepareDownloadTask,
+  mergeAriaStatusToDownloadTask,
+  logFn,
+} from './utils';
 import { creationTaskAbortControllerMap } from './creation';
-import { delay } from '../../utils';
 import { perf } from './performance';
 
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
@@ -39,7 +42,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
   batchUpdateDownloadTasks: (tasks) => {
     const { downloadTasks: old } = get();
-    const map = R.fromPairs(tasks.map((t) => [t.gid, t] as [string, DownloadTask]));
+    const map = R.fromPairs(
+      tasks.map((t) => [t.gid, t] as [string, DownloadTask]),
+    );
     set({
       downloadTasks: old.map((o) =>
         map[o.gid]?.updatedAt >= o.updatedAt ? map[o.gid] : o,
@@ -84,7 +89,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     await aria2.invoke('aria2.unpauseAll');
   },
   removeDownloadTask: async (gid) => {
-    aria2.invoke('aria2.remove', gid).catch((e) => logFn('warn', 'remove fail', e));
+    aria2
+      .invoke('aria2.remove', gid)
+      .catch((e) => logFn('warn', 'remove fail', e));
     const s = get();
     set({
       downloadTasks: s.downloadTasks.filter((v) => v.gid !== gid),
@@ -113,7 +120,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const olds = s.downloadTasks.filter((t) => gids.includes(t.gid));
     if (!olds.length) throw new Error('no tasks');
     await s.batchRemoveDownloadTasks(gids);
-    await s.batchCreateDownloadTask(olds.map((t) => ({ media: t.media, post: t.post })));
+    await s.batchCreateDownloadTask(
+      olds.map((t) => ({ media: t.media, post: t.post })),
+    );
   },
   syncDownloadTaskStatus: async (gid) => {
     const { downloadTasks, updateDownloadTask, removeDownloadTask } = get();
@@ -124,7 +133,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 
     if (status.status === 'error') {
       if (task.ariaRetryCountRemains > 0) {
-        logFn('warn', `重试下载 ${task.ariaRetryCountRemains} (剩余重试次数: ${task.ariaRetryCountRemains - 1})`);
+        logFn(
+          'warn',
+          `重试下载 ${task.ariaRetryCountRemains} (剩余重试次数: ${task.ariaRetryCountRemains - 1})`,
+        );
         // 优化：不删除任务，直接重新添加下载，并复用原有任务信息
         let newGid: string;
         try {
@@ -135,7 +147,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         } catch (err: any) {
           logFn('error', `重试添加下载失败: ${err.message}`);
           const merged = await mergeAriaStatusToDownloadTask(status, task);
-          updateDownloadTask({ ...merged, error: `重试失败: ${err.message}` }, now);
+          updateDownloadTask(
+            { ...merged, error: `重试失败: ${err.message}` },
+            now,
+          );
           return;
         }
 
@@ -155,7 +170,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         try {
           const newStatus = await aria2.tellStatus(newGid);
           if (newStatus.status !== 'error') {
-            updateDownloadTask(await mergeAriaStatusToDownloadTask(newStatus, newTask), now);
+            updateDownloadTask(
+              await mergeAriaStatusToDownloadTask(newStatus, newTask),
+              now,
+            );
           }
         } catch (e) {
           // ignore
@@ -175,13 +193,15 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         updateDownloadTask(merged, now);
       }
     } else {
-      updateDownloadTask(await mergeAriaStatusToDownloadTask(status, task), now);
+      updateDownloadTask(
+        await mergeAriaStatusToDownloadTask(status, task),
+        now,
+      );
     }
   },
   creationTasks: [],
   createCreationTask: (user, filter) => {
-    const id =
-      crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const id = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
     const ctrl = new AbortController();
     creationTaskAbortControllerMap.set(id, ctrl);
     set({
@@ -211,35 +231,60 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   setBatchProgress: (p) => set({ batchProgress: p }),
 }));
 
-// ================= 自动同步（优化版，间隔5秒） =================
-(async function autoSync() {
-  while (true) {
-    await delay(5000);
-    const ids = useDownloadStore.getState().autoSyncTaskIds;
-    if (!ids.length) continue;
-    try {
-      const now = Date.now();
-      const resultMap = await aria2.tellStatus(ids);
-      const { downloadTasks, batchUpdateDownloadTasks } =
-        useDownloadStore.getState();
-      const updated = await Promise.all(
-        downloadTasks.map(async (old) => {
-          if (old.updatedAt > now || !resultMap[old.gid]) return old;
-          const merged = await mergeAriaStatusToDownloadTask(resultMap[old.gid], old, now);
-          if (
-            merged.status === old.status &&
-            merged.completeSize === old.completeSize &&
-            merged.totalSize === old.totalSize &&
-            merged.error === old.error
-          ) {
-            return old;
-          }
-          return merged;
-        })
-      );
-      batchUpdateDownloadTasks(updated);
-    } catch (e) {
-      logFn('error', 'sync error', e);
-    }
+// ================= 自动同步（优化版） =================
+// ✅ 优化：改用 setInterval + HMR 清理，避免 vite 热更新时叠加多个循环
+let syncTimerId: ReturnType<typeof setInterval> | null = null;
+
+async function doAutoSync() {
+  const ids = useDownloadStore.getState().autoSyncTaskIds;
+  if (!ids.length) return;
+  try {
+    const now = Date.now();
+    const resultMap = await aria2.tellStatus(ids);
+    const { downloadTasks, batchUpdateDownloadTasks } =
+      useDownloadStore.getState();
+    const updated = await Promise.all(
+      downloadTasks.map(async (old) => {
+        if (old.updatedAt > now || !resultMap[old.gid]) return old;
+        const merged = await mergeAriaStatusToDownloadTask(
+          resultMap[old.gid],
+          old,
+          now,
+        );
+        if (
+          merged.status === old.status &&
+          merged.completeSize === old.completeSize &&
+          merged.totalSize === old.totalSize &&
+          merged.error === old.error
+        ) {
+          return old;
+        }
+        return merged;
+      }),
+    );
+    batchUpdateDownloadTasks(updated);
+  } catch (e) {
+    logFn('error', 'sync error', e);
   }
-})();
+}
+
+function startAutoSync() {
+  if (syncTimerId !== null) return;
+  syncTimerId = setInterval(doAutoSync, 5000);
+}
+
+function stopAutoSync() {
+  if (syncTimerId !== null) {
+    clearInterval(syncTimerId);
+    syncTimerId = null;
+  }
+}
+
+startAutoSync();
+
+// ✅ vite HMR：模块被替换前停止旧定时器，避免叠加
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    stopAutoSync();
+  });
+}

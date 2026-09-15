@@ -1,10 +1,16 @@
 import { request } from '../ipc/network';
 import * as R from 'ramda';
 
+// ✅ 优化：最多翻 10 页，避免 GitHub 返回异常时无限翻页
+const MAX_PAGES = 10;
+
 export async function getLatestReleases(pre = false) {
   let url = 'https://api.github.com/repos/MiningCattiva/x-spider/releases';
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  let pageCount = 0;
+
+  while (pageCount < MAX_PAGES) {
+    pageCount++;
+
     const resp = await request({
       method: 'GET',
       responseType: 'text',
@@ -18,9 +24,14 @@ export async function getLatestReleases(pre = false) {
       throw new Error('无法获取最新软件版本，请稍后再试。');
     }
 
-    const body = JSON.parse(resp.body);
+    let body: any;
+    try {
+      body = JSON.parse(resp.body);
+    } catch {
+      throw new Error('无法获取最新软件版本，请稍后再试。');
+    }
 
-    if (!body[0]) {
+    if (!Array.isArray(body) || !body[0]) {
       throw new Error('无法获取最新软件版本，请稍后再试。');
     }
 
@@ -49,4 +60,7 @@ export async function getLatestReleases(pre = false) {
 
     url = links.next;
   }
+
+  // ✅ 达到最大页数仍未找到稳定版，返回 null
+  return null;
 }

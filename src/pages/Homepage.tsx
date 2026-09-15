@@ -79,7 +79,10 @@ const shuffleArray = <T,>(arr: T[]): T[] => {
   return shuffled;
 };
 
-const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+const withTimeout = <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T> => {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`请求超时（超过${timeoutMs / 1000}秒）`));
@@ -141,7 +144,9 @@ export const Homepage: React.FC = () => {
     setForceFullScan: s.setForceFullScan,
   }));
 
-  const searchAbortControllerRef = useRef<AbortController>();
+  // ✅ 优化：用递增 token 判断请求是否已过期，避免快速切换用户时
+  //            旧请求的错误提示/历史记录污染当前结果
+  const searchTokenRef = useRef(0);
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
   const getListFilePath = async (): Promise<string> => {
@@ -196,19 +201,22 @@ export const Homepage: React.FC = () => {
     return text;
   };
 
+  // ✅ 优化：用 token 判断是否已被新搜索取代
   const startSearch = async (sn: string) => {
     const cleanedSn = cleanUsername(sn);
     if (!cleanedSn) return;
+
+    const myToken = ++searchTokenRef.current;
     setKeyword(cleanedSn);
-    if (searchAbortControllerRef.current) {
-      searchAbortControllerRef.current.abort('Another search');
-    }
     clearUser();
     clearMediaList();
+
     try {
       await loadUser(cleanedSn);
+      if (myToken !== searchTokenRef.current) return;
       addSearchHistory(cleanedSn);
     } catch (err: any) {
+      if (myToken !== searchTokenRef.current) return;
       message.error('加载失败，请检查用户 ID 是否正确');
     }
   };
@@ -282,8 +290,7 @@ export const Homepage: React.FC = () => {
 
       await Promise.all(
         batch.map(async (name, j) => {
-          // ✅ 已修复：用 map 的索引 j 而不是 batch.indexOf(name)，
-          //            否则遇到重名用户时进度会算错
+          // ✅ 已修复：用 map 索引 j，避免重名用户进度算错
           const index = i + j;
           setBatchProgress({
             total: progressTotal,
@@ -291,7 +298,11 @@ export const Homepage: React.FC = () => {
             currentUser: name,
           });
 
-          const ok = await processOneUser(name, successCounter, timeoutCounter);
+          const ok = await processOneUser(
+            name,
+            successCounter,
+            timeoutCounter,
+          );
           if (!ok) failed.push(name);
 
           setBatchProgress({
@@ -395,10 +406,16 @@ export const Homepage: React.FC = () => {
         total,
       );
 
-      for (let round = 1; round <= RETRY_ROUNDS && pending.length > 0; round++) {
+      for (
+        let round = 1;
+        round <= RETRY_ROUNDS && pending.length > 0;
+        round++
+      ) {
         notification.info({
           message: `第 ${round} 轮重试`,
-          description: `剩余 ${pending.length} 个用户，${ROUND_DELAY_MS / 1000} 秒后开始`,
+          description: `剩余 ${pending.length} 个用户，${
+            ROUND_DELAY_MS / 1000
+          } 秒后开始`,
           duration: 4,
           placement: 'topRight',
         });
@@ -448,7 +465,6 @@ export const Homepage: React.FC = () => {
           placement: 'topRight',
         });
       }
-    // ✅ 已修复：补齐 catch / finally，并闭合 batchDownload 函数
     } catch (err: any) {
       window.log.error('批量下载失败', err);
       message.error(`批量下载失败：${err?.message || '未知错误'}`);
@@ -470,7 +486,9 @@ export const Homepage: React.FC = () => {
               onPressEnter={() => startSearch(keyword)}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder={cookieString ? '请输入用户 ID 或主页链接' : '请先登录'}
+              placeholder={
+                cookieString ? '请输入用户 ID 或主页链接' : '请先登录'
+              }
               className="text-center"
             />
             <Button

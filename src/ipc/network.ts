@@ -7,11 +7,28 @@ import { delay } from '../utils';
 
 const MAX_RETRY_COUNT = 4;
 const MAX_RETRY_DELAY = 4000;
-// 限流日志节流：最多每 30 秒写一次，避免刷屏
 const RATE_LIMIT_LOG_INTERVAL = 30000;
 
-let log: ICategoriedLogger;
+// ✅ 优化：用 getLog() 懒初始化，并加 noop 兜底，避免 window.log 未就绪时崩溃
+let netLog: ICategoriedLogger | null = null;
 let lastRateLimitLogTime = 0;
+
+const NOOP_LOG: ICategoriedLogger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+};
+
+function getLog(): ICategoriedLogger {
+  if (netLog) return netLog;
+  if (typeof window !== 'undefined' && window.log?.category) {
+    netLog = window.log.category('NET');
+  } else {
+    netLog = NOOP_LOG;
+  }
+  return netLog;
+}
 
 function isRateLimitError(msg: string): boolean {
   const m = msg.toLowerCase();
@@ -24,9 +41,7 @@ function isRateLimitError(msg: string): boolean {
 }
 
 export async function request(options: RequestOptions) {
-  if (!log) {
-    log = window.log.category('NET');
-  }
+  const log = getLog();
   const url = new URL(options.url);
 
   if (options.query) {
@@ -92,6 +107,7 @@ async function requestInternal(
   headers: Record<string, string>,
   responseType: string,
 ): Promise<Response> {
+  const log = getLog();
   const startTs = Date.now();
   const reqId = reqIdGlobal++;
   log.info(`REQ_${reqId}`, method, url, {
