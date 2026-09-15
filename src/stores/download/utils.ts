@@ -7,11 +7,11 @@ import { useSettingsStore } from '../settings';
 import { getDownloadUrl } from '../../twitter/utils';
 import { resolveVariables } from '../../utils/file-name-template';
 import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
+import MediaType from '../../enums/MediaType';
 
 // ================= 日志系统 =================
 const MAX_LOG_FILE_SIZE = 150 * 1024;
 const TRIM_INTERVAL_MS = 30000;
-// ✅ 优化：加 1MB 硬上限，防止日志被外部工具撑大后一次读爆内存
 const HARD_LIMIT_BYTES = 1024 * 1024;
 let debugLogFilePath: string | null = null;
 let trimScheduled = false;
@@ -39,7 +39,6 @@ async function trimLogFile() {
       return;
     }
 
-    // ✅ 优化：超过硬上限，只保留最后 1MB（丢掉可能不完整的首行）
     if (content.length > HARD_LIMIT_BYTES) {
       content = content.slice(-HARD_LIMIT_BYTES);
       const firstNewline = content.indexOf('\n');
@@ -89,7 +88,6 @@ async function trimLogFile() {
   }
 }
 
-// 使用本地时间格式（YYYY-MM-DD HH:mm:ss.SSS）
 export function writeDebugLog(message: string) {
   const timestamp = dayjs().format('YYYY-MM-DD HH:mm:ss.SSS');
   const line = `${timestamp} ${message}\n`;
@@ -103,7 +101,6 @@ export function writeDebugLog(message: string) {
   })();
 }
 
-// debug-dl.log：全级别记录（INFO/WARN/ERROR）
 export function logFn(level: string, ...args: any[]) {
   const msg = args
     .map((a) => {
@@ -119,10 +116,8 @@ export function logFn(level: string, ...args: any[]) {
     })
     .join(' ');
 
-  // debug-dl.log 记录所有级别
   writeDebugLog(`[DL] [${level.toUpperCase()}] ${msg}`);
 
-  // 应用日志只写 WARN/ERROR
   if (level === 'warn' || level === 'error') {
     try {
       if (window.log?.category) {
@@ -136,7 +131,6 @@ export function logFn(level: string, ...args: any[]) {
   }
 }
 
-// 定期 trim
 if (typeof window !== 'undefined') {
   setInterval(() => {
     trimLogFile().catch(() => {});
@@ -162,10 +156,22 @@ export async function mergeAriaStatusToDownloadTask(
   };
 }
 
+// ✅ 新增：封面图任务参数（视频 / GIF 才有）
+export interface ThumbTaskInfo {
+  url: string;
+  dir: string;
+  fileName: string;
+}
+
+export interface PreparedTasks {
+  task: DownloadTask;
+  thumbTask?: ThumbTaskInfo;
+}
+
 export async function prepareDownloadTask({
   post,
   media,
-}: CreateDownloadTaskParams): Promise<DownloadTask> {
+}: CreateDownloadTaskParams): Promise<PreparedTasks> {
   const settings = useSettingsStore.getState();
   const downloadUrl = getDownloadUrl(media);
   logFn('info', `准备下载: ${downloadUrl}`);
@@ -179,7 +185,8 @@ export async function prepareDownloadTask({
     templateData,
   );
   logFn('info', `目录: ${dir}, 文件: ${fileName}`);
-  return {
+
+  const task: DownloadTask = {
     gid: '',
     status: AriaStatus.Waiting,
     completeSize: 0,
@@ -193,4 +200,20 @@ export async function prepareDownloadTask({
     downloadUrl,
     ariaRetryCountRemains: 5,
   };
+
+  // ✅ 新增：视频 / GIF 额外附带封面图下载任务
+  //    - 保存路径：同目录同文件名 + ".thumb.jpg"
+  //    - 用途：离线时也能在"已完成"列表显示封面
+  let thumbTask: ThumbTaskInfo | undefined;
+  const isVideoLike =
+    media.type === MediaType.Video || media.type === MediaType.Gif;
+  if (isVideoLike && media.url) {
+    thumbTask = {
+      url: `${media.url}?format=jpg&name=thumb`,
+      dir,
+      fileName: `${fileName}.thumb.jpg`,
+    };
+  }
+
+  return { task, thumbTask };
 }

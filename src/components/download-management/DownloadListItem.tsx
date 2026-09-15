@@ -8,7 +8,7 @@ import {
   PauseOutlined,
 } from '@ant-design/icons';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
-import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/tauri';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useRef, useState } from 'react';
@@ -46,14 +46,9 @@ const areEqual = (
 };
 
 // ============ 缩略图缓存与并发控制 ============
-
-// 已生成好的缩略图 data URL 缓存：gid -> dataUrl（null 表示生成失败）
 const thumbCache = new Map<string, string | null>();
-
-// 正在生成的缩略图 Promise 缓存，避免同一 gid 并发重复请求
 const thumbInflight = new Map<string, Promise<string | null>>();
 
-// 同时最多处理 2 个缩略图请求，避免打爆 IPC
 const MAX_CONCURRENT_THUMBS = 2;
 let runningThumbTasks = 0;
 const thumbWaitQueue: Array<() => void> = [];
@@ -75,12 +70,6 @@ function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
-/**
- * 生成（或从缓存拿）缩略图 data URL。
- * - 命中缓存直接返回
- * - 已有进行中的请求，复用同一个 Promise
- * - 否则进入并发队列，调用 Rust 端 generate_thumbnail
- */
 function loadThumbnail(gid: string, localPath: string): Promise<string | null> {
   if (thumbCache.has(gid)) {
     return Promise.resolve(thumbCache.get(gid)!);
@@ -108,7 +97,6 @@ function loadThumbnail(gid: string, localPath: string): Promise<string | null> {
   return p;
 }
 
-// 清理某个 gid 的缓存（删除/重下时调用）
 function clearThumbCache(gid: string) {
   thumbCache.delete(gid);
   thumbInflight.delete(gid);
@@ -117,7 +105,6 @@ function clearThumbCache(gid: string) {
 // ============ 缩略图类型 ============
 type ThumbKind = 'local' | 'net' | 'none';
 
-// 缩略图超时（毫秒）：生成一张 400px 缩略图通常 <500ms，给 15 秒足够
 const THUMB_TIMEOUT_MS = 15000;
 
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
@@ -151,14 +138,15 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         ? `${t.media.url}?format=jpg&name=thumb`
         : '';
 
-      // 非图片 / 未完成 → 直接走网络缩略图
-      const canUseLocalThumb =
-        t.status === AriaStatus.Complete &&
-        t.media.type === MediaType.Photo &&
-        !!t.dir &&
-        !!t.fileName;
+      const isVideoLike =
+        t.media.type === MediaType.Video ||
+        t.media.type === MediaType.Gif;
 
-      if (!canUseLocalThumb) {
+      // 未完成的任务：直接走网络封面图
+      const canUseLocal =
+        t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
+
+      if (!canUseLocal) {
         setImgSrc(netUrl);
         setThumbKind(netUrl ? 'net' : 'none');
         return () => {
@@ -166,14 +154,13 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 检查缓存：命中直接显示
+      // 检查缓存
       if (thumbCache.has(t.gid)) {
         const cached = thumbCache.get(t.gid);
         if (cached) {
           setImgSrc(cached);
           setThumbKind('local');
         } else {
-          // 之前生成失败过，回退到网络
           setImgSrc(netUrl);
           setThumbKind(netUrl ? 'net' : 'none');
         }
@@ -182,18 +169,22 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 未命中缓存 → 先用网络图占位（如果也有），然后异步生成缩略图
-      // 如果没网络图，就先显示"生成缩略图中"
       setImgSrc(netUrl);
       setThumbKind(netUrl ? 'net' : 'none');
 
       (async () => {
         try {
-          const localPath = await path.join(t.dir, t.fileName);
-          const exists = await fs.exists(localPath);
+          // ✅ 关键：本地缩略图路径
+          //    - Photo: 就是下载下来的原图
+          //    - Video/Gif: 是 mp4 同目录下的 "<原文件名>.thumb.jpg"
+          const localThumbPath = isVideoLike
+            ? await path.join(t.dir, `${t.fileName}.thumb.jpg`)
+            : await path.join(t.dir, t.fileName);
+
+          const exists = await fs.exists(localThumbPath);
           if (cancelled || !exists) return;
 
-          const dataUrl = await loadThumbnail(t.gid, localPath);
+          const dataUrl = await loadThumbnail(t.gid, localThumbPath);
           if (cancelled) return;
 
           if (dataUrl) {
@@ -202,7 +193,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             setImgSrc(dataUrl);
             setThumbKind('local');
           }
-          // dataUrl 为 null 时，保持网络图 / 无图状态
         } catch (e) {
           console.warn('[Thumb] local thumb load failed:', e);
         }

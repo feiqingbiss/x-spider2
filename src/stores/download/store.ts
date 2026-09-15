@@ -23,16 +23,32 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   downloadTasks: [],
   createDownloadTask: async (params) => {
     perf.mark('createDownload-start');
-    const task = await prepareDownloadTask(params);
+    const { task, thumbTask } = await prepareDownloadTask(params);
+
     const gid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
       dir: task.dir,
       out: task.fileName,
     });
     task.gid = gid;
+
+    // ✅ 新增：顺便在后台下载封面图（不追踪状态、不进 store）
+    if (thumbTask) {
+      aria2
+        .invoke('aria2.addUri', [thumbTask.url], {
+          dir: thumbTask.dir,
+          out: thumbTask.fileName,
+        })
+        .catch((e) => logFn('warn', '封面图下载任务发送失败', e));
+    }
+
     const status = await aria2.tellStatus(task.gid);
     task.status = status.status;
     set({ downloadTasks: get().downloadTasks.concat(task) });
-    perf.measure('createDownload', 'createDownload-start', 'createDownload-end');
+    perf.measure(
+      'createDownload',
+      'createDownload-start',
+      'createDownload-end',
+    );
   },
   updateDownloadTask: (task, now = Date.now()) => {
     const oldTasks = get().downloadTasks;
@@ -53,14 +69,20 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
   batchCreateDownloadTask: async (paramsList) => {
     const tasks: DownloadTask[] = [];
+    const thumbTasks: Array<{ url: string; dir: string; fileName: string }> =
+      [];
+
     for (const p of paramsList) {
       try {
-        tasks.push(await prepareDownloadTask(p));
+        const { task, thumbTask } = await prepareDownloadTask(p);
+        tasks.push(task);
+        if (thumbTask) thumbTasks.push(thumbTask);
       } catch (e: any) {
         logFn('error', `准备失败: ${e.message}`);
       }
     }
     if (!tasks.length) return;
+
     const gids = (
       await aria2.batchInvoke(
         tasks.map((t) => ({
@@ -74,6 +96,19 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       t.gid = gids[i];
       t.status = statusMap[t.gid].status;
     });
+
+    // ✅ 新增：批量发送封面图下载任务（不追踪状态）
+    if (thumbTasks.length) {
+      aria2
+        .batchInvoke(
+          thumbTasks.map((t) => ({
+            methodName: 'aria2.addUri',
+            params: [[t.url], { dir: t.dir, out: t.fileName }],
+          })),
+        )
+        .catch((e) => logFn('warn', '封面图批量下载任务发送失败', e));
+    }
+
     set({ downloadTasks: get().downloadTasks.concat(tasks) });
   },
   pauseDownloadTask: async (gid) => {
@@ -137,7 +172,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
           'warn',
           `重试下载 ${task.ariaRetryCountRemains} (剩余重试次数: ${task.ariaRetryCountRemains - 1})`,
         );
-        // 优化：不删除任务，直接重新添加下载，并复用原有任务信息
         let newGid: string;
         try {
           newGid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
@@ -162,7 +196,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
           updatedAt: now,
         };
 
-        // 移除旧任务，添加新任务
         await removeDownloadTask(gid);
         set({ downloadTasks: get().downloadTasks.concat(newTask) });
         logFn('info', `重试成功，新任务 gid: ${newGid}`);
@@ -232,7 +265,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 }));
 
 // ================= 自动同步（优化版） =================
-// ✅ 优化：改用 setInterval + HMR 清理，避免 vite 热更新时叠加多个循环
 let syncTimerId: ReturnType<typeof setInterval> | null = null;
 
 async function doAutoSync() {
@@ -282,7 +314,6 @@ function stopAutoSync() {
 
 startAutoSync();
 
-// ✅ vite HMR：模块被替换前停止旧定时器，避免叠加
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     stopAutoSync();
