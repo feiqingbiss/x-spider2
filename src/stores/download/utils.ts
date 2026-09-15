@@ -11,6 +11,8 @@ import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
 // ================= 日志系统 =================
 const MAX_LOG_FILE_SIZE = 150 * 1024;
 const TRIM_INTERVAL_MS = 30000;
+// ✅ 优化：加 1MB 硬上限，防止日志被外部工具撑大后一次读爆内存
+const HARD_LIMIT_BYTES = 1024 * 1024;
 let debugLogFilePath: string | null = null;
 let trimScheduled = false;
 
@@ -36,6 +38,16 @@ async function trimLogFile() {
     } catch (e) {
       return;
     }
+
+    // ✅ 优化：超过硬上限，只保留最后 1MB（丢掉可能不完整的首行）
+    if (content.length > HARD_LIMIT_BYTES) {
+      content = content.slice(-HARD_LIMIT_BYTES);
+      const firstNewline = content.indexOf('\n');
+      if (firstNewline >= 0) {
+        content = content.slice(firstNewline + 1);
+      }
+    }
+
     if (content.length <= MAX_LOG_FILE_SIZE) return;
 
     const lines = content.split('\n');

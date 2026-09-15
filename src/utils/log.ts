@@ -6,9 +6,6 @@ import { path, fs } from '@tauri-apps/api';
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
 
-// ✅ 优化：加 1MB 硬上限，防止日志被外部工具撑大后一次读爆内存
-const HARD_LIMIT_BYTES = 1024 * 1024;
-
 export class Logger implements ILogger {
   #now = dayjs();
   #logFileBuffers: string[] = [];
