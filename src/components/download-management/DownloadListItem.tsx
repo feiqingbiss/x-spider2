@@ -8,7 +8,7 @@ import {
   PauseOutlined,
 } from '@ant-design/icons';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
-import { convertFileSrc } from '@tauri-apps/api/tauri';
+import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useRef, useState } from 'react';
@@ -45,14 +45,80 @@ const areEqual = (
   );
 };
 
-// 图片加载超时（毫秒）
-const IMAGE_LOAD_TIMEOUT_MS = 30000;
+// ============ 缩略图缓存与并发控制 ============
 
-// ✅ 新增：模块级缓存，避免 react-window 反复卸载/挂载时重复检查文件
-//    key = gid，value = asset URL（null 表示检查过但文件不存在）
-const localThumbCache = new Map<string, string | null>();
+// 已生成好的缩略图 data URL 缓存：gid -> dataUrl（null 表示生成失败）
+const thumbCache = new Map<string, string | null>();
 
+// 正在生成的缩略图 Promise 缓存，避免同一 gid 并发重复请求
+const thumbInflight = new Map<string, Promise<string | null>>();
+
+// 同时最多处理 2 个缩略图请求，避免打爆 IPC
+const MAX_CONCURRENT_THUMBS = 2;
+let runningThumbTasks = 0;
+const thumbWaitQueue: Array<() => void> = [];
+
+function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const task = () => {
+      runningThumbTasks++;
+      fn()
+        .then(resolve, reject)
+        .finally(() => {
+          runningThumbTasks--;
+          const next = thumbWaitQueue.shift();
+          if (next) next();
+        });
+    };
+    if (runningThumbTasks < MAX_CONCURRENT_THUMBS) task();
+    else thumbWaitQueue.push(task);
+  });
+}
+
+/**
+ * 生成（或从缓存拿）缩略图 data URL。
+ * - 命中缓存直接返回
+ * - 已有进行中的请求，复用同一个 Promise
+ * - 否则进入并发队列，调用 Rust 端 generate_thumbnail
+ */
+function loadThumbnail(gid: string, localPath: string): Promise<string | null> {
+  if (thumbCache.has(gid)) {
+    return Promise.resolve(thumbCache.get(gid)!);
+  }
+  const inflight = thumbInflight.get(gid);
+  if (inflight) return inflight;
+
+  const p = runWithLimit(async () => {
+    try {
+      const dataUrl = await invoke<string>('generate_thumbnail', {
+        path: localPath,
+      });
+      thumbCache.set(gid, dataUrl);
+      return dataUrl;
+    } catch (e) {
+      console.warn('[Thumb] generate_thumbnail failed:', e);
+      thumbCache.set(gid, null);
+      return null;
+    } finally {
+      thumbInflight.delete(gid);
+    }
+  });
+
+  thumbInflight.set(gid, p);
+  return p;
+}
+
+// 清理某个 gid 的缓存（删除/重下时调用）
+function clearThumbCache(gid: string) {
+  thumbCache.delete(gid);
+  thumbInflight.delete(gid);
+}
+
+// ============ 缩略图类型 ============
 type ThumbKind = 'local' | 'net' | 'none';
+
+// 缩略图超时（毫秒）：生成一张 400px 缩略图通常 <500ms，给 15 秒足够
+const THUMB_TIMEOUT_MS = 15000;
 
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
@@ -61,8 +127,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     const [imageErrored, setImageErrored] = useState(false);
     const [imgSrc, setImgSrc] = useState('');
     const [thumbKind, setThumbKind] = useState<ThumbKind>('none');
-
-    const settledRef = useRef(false);
 
     const {
       removeDownloadTask,
@@ -80,9 +144,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
 
     useEffect(() => {
       let cancelled = false;
-
-      // 重置加载状态
-      settledRef.current = false;
       setImageLoaded(false);
       setImageErrored(false);
 
@@ -90,8 +151,14 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         ? `${t.media.url}?format=jpg&name=thumb`
         : '';
 
-      // ============ 分支 1：未完成 或 非图片类型 → 直接走网络 ============
-      if (t.status !== AriaStatus.Complete || t.media.type !== MediaType.Photo) {
+      // 非图片 / 未完成 → 直接走网络缩略图
+      const canUseLocalThumb =
+        t.status === AriaStatus.Complete &&
+        t.media.type === MediaType.Photo &&
+        !!t.dir &&
+        !!t.fileName;
+
+      if (!canUseLocalThumb) {
         setImgSrc(netUrl);
         setThumbKind(netUrl ? 'net' : 'none');
         return () => {
@@ -99,15 +166,14 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // ============ 分支 2：已完成 + 图片类型 + 有缓存 → 直接用缓存 ============
-      // ✅ 这是关键：滚回来重新挂载时，不会重新检查文件，直接就拿到本地 URL
-      if (localThumbCache.has(t.gid)) {
-        const cached = localThumbCache.get(t.gid);
+      // 检查缓存：命中直接显示
+      if (thumbCache.has(t.gid)) {
+        const cached = thumbCache.get(t.gid);
         if (cached) {
           setImgSrc(cached);
           setThumbKind('local');
         } else {
-          // 缓存里是 null，说明检查过、文件不存在，走网络
+          // 之前生成失败过，回退到网络
           setImgSrc(netUrl);
           setThumbKind(netUrl ? 'net' : 'none');
         }
@@ -116,8 +182,8 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // ============ 分支 3：已完成 + 图片类型 + 无缓存 → 首次检查 ============
-      // 先用网络图占位，避免空白（只在这条任务第一次显示时发生）
+      // 未命中缓存 → 先用网络图占位（如果也有），然后异步生成缩略图
+      // 如果没网络图，就先显示"生成缩略图中"
       setImgSrc(netUrl);
       setThumbKind(netUrl ? 'net' : 'none');
 
@@ -125,23 +191,20 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         try {
           const localPath = await path.join(t.dir, t.fileName);
           const exists = await fs.exists(localPath);
+          if (cancelled || !exists) return;
+
+          const dataUrl = await loadThumbnail(t.gid, localPath);
           if (cancelled) return;
 
-          if (exists) {
-            const url = convertFileSrc(localPath);
-            localThumbCache.set(t.gid, url);
-            // 切换 imgSrc 前重置加载状态
-            settledRef.current = false;
+          if (dataUrl) {
             setImageLoaded(false);
             setImageErrored(false);
-            setImgSrc(url);
+            setImgSrc(dataUrl);
             setThumbKind('local');
-          } else {
-            // 记下"检查过但不存在"，下次滚回来不再重复检查
-            localThumbCache.set(t.gid, null);
           }
+          // dataUrl 为 null 时，保持网络图 / 无图状态
         } catch (e) {
-          console.warn('[Thumb] check failed, fallback to net', e);
+          console.warn('[Thumb] local thumb load failed:', e);
         }
       })();
 
@@ -151,22 +214,22 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
 
     // 超时兜底
+    const settledRef = useRef(false);
     useEffect(() => {
       if (!imgSrc) return;
+      settledRef.current = false;
       const timer = window.setTimeout(() => {
         if (!settledRef.current) {
-          console.warn('[Thumb] load timeout for', imgSrc);
           setImageErrored(true);
           setImageLoaded(true);
           settledRef.current = true;
         }
-      }, IMAGE_LOAD_TIMEOUT_MS);
+      }, THUMB_TIMEOUT_MS);
       return () => window.clearTimeout(timer);
     }, [imgSrc]);
 
-    // 删除任务时，顺便清掉缓存
     const handleRemove = async (gid: string) => {
-      localThumbCache.delete(gid);
+      clearThumbCache(gid);
       await removeDownloadTask(gid);
     };
 
@@ -174,8 +237,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       name: '重新下载',
       onClick: async () => {
         try {
-          // 重下会生成新 gid，顺便清掉旧缓存
-          localThumbCache.delete(t.gid);
+          clearThumbCache(t.gid);
           await redownloadTask(t.gid);
           message.success('已开始重新下载该任务');
         } catch (err) {
@@ -282,14 +344,14 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         >
           {!imgSrc && (
             <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
-              无预览
+              生成缩略图中...
             </div>
           )}
           {imgSrc && !imageLoaded && !imageErrored && (
             <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
               <span>加载中...</span>
               {thumbKind === 'local' && (
-                <span className="text-[10px] mt-1 opacity-70">本地原图</span>
+                <span className="text-[10px] mt-1 opacity-70">本地缩略图</span>
               )}
             </div>
           )}
@@ -312,7 +374,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             {imgSrc && (
               <img
                 src={imgSrc}
-                loading="lazy"
                 className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
                   imageLoaded && !imageErrored ? 'block' : 'hidden'
                 }`}
