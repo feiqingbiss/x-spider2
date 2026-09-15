@@ -50,10 +50,8 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     const { message } = App.useApp();
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageErrored, setImageErrored] = useState(false);
-    // ✅ 新增：缩略图 src，优先本地文件，其次网络图
     const [imgSrc, setImgSrc] = useState('');
 
-    // ✅ 优化：useShallow + 清理未使用的字段
     const {
       removeDownloadTask,
       pauseDownloadTask,
@@ -68,44 +66,63 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       })),
     );
 
-    // ✅ 新增：已完成 + 图片类型 + 有本地路径 → 用本地文件；否则回退网络图
     useEffect(() => {
       let cancelled = false;
       setImageLoaded(false);
       setImageErrored(false);
 
+      // 步骤 1：先同步设网络缩略图作为兜底（保证 imgSrc 不为空）
+      const netUrl = t.media.url
+        ? `${t.media.url}?format=jpg&name=thumb`
+        : '';
+      setImgSrc(netUrl);
+
+      console.log('[Thumb]', {
+        gid: t.gid,
+        status: t.status,
+        mediaType: t.media.type,
+        mediaUrl: t.media.url,
+        dir: t.dir,
+        fileName: t.fileName,
+        netUrl,
+      });
+
+      // 步骤 2：如果是已完成 + 图片类型 + 有本地路径，尝试用本地文件替换
+      const canUseLocalFile =
+        t.status === AriaStatus.Complete &&
+        t.media.type === MediaType.Photo &&
+        !!t.dir &&
+        !!t.fileName;
+
+      if (!canUseLocalFile) {
+        return () => {
+          cancelled = true;
+        };
+      }
+
       (async () => {
-        const canUseLocalFile =
-          t.status === AriaStatus.Complete &&
-          t.media.type === MediaType.Photo &&
-          !!t.dir &&
-          !!t.fileName;
+        try {
+          const localPath = await path.join(t.dir, t.fileName);
+          const exists = await fs.exists(localPath);
+          console.log('[Thumb] local path', localPath, 'exists =', exists);
+          if (!exists || cancelled) return;
 
-        if (canUseLocalFile) {
-          try {
-            const localPath = await path.join(t.dir, t.fileName);
-            const exists = await fs.exists(localPath);
-            if (exists && !cancelled) {
-              setImgSrc(convertFileSrc(localPath));
-              return;
-            }
-          } catch (e) {
-            // 读取本地路径失败，回退到网络图
-          }
-        }
+          const assetUrl = convertFileSrc(localPath);
+          console.log('[Thumb] using asset url:', assetUrl);
 
-        // 回退：网络缩略图
-        if (!cancelled) {
-          setImgSrc(
-            t.media.url ? `${t.media.url}?format=jpg&name=thumb` : '',
-          );
+          // 切到本地文件前，先把加载状态重置，等新的 onLoad 触发
+          setImageLoaded(false);
+          setImageErrored(false);
+          setImgSrc(assetUrl);
+        } catch (e) {
+          console.warn('[Thumb] local file check failed, fallback to net', e);
         }
       })();
 
       return () => {
         cancelled = true;
       };
-    }, [t.status, t.dir, t.fileName, t.media.url, t.media.type]);
+    }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
 
     const actionRedownload: TaskAction = {
       name: '重新下载',
@@ -205,12 +222,17 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             height: itemClientHeight,
           }}
         >
-          {!imageLoaded && !imageErrored && (
+          {!imgSrc && (
+            <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
+              无预览
+            </div>
+          )}
+          {imgSrc && !imageLoaded && !imageErrored && (
             <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
               加载中...
             </div>
           )}
-          {imageErrored && (
+          {imgSrc && imageErrored && (
             <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
               预览不可用
             </div>
@@ -231,7 +253,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
                 src={imgSrc}
                 loading="lazy"
                 className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
-                  imageLoaded ? 'block' : 'hidden'
+                  imageLoaded && !imageErrored ? 'block' : 'hidden'
                 }`}
                 onLoad={() => setImageLoaded(true)}
                 onError={() => {
