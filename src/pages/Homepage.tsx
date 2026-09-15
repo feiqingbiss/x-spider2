@@ -240,6 +240,7 @@ export const Homepage: React.FC = () => {
               message: '请求过于频繁',
               description: `已自动暂停 ${Math.round(waitMs / 1000)} 秒后继续`,
               duration: 4,
+              placement: 'topRight',
             });
           }
           await delay(waitMs);
@@ -251,13 +252,13 @@ export const Homepage: React.FC = () => {
           continue;
         }
 
+        // 最终失败：只记录日志，批量汇总时统一展示
         if (errMsg.includes('超时')) {
           timeoutCounter.count++;
         }
-        notification.warning({
-          message: `用户 ${name} 加载失败`,
-          description: userFriendlyError(err),
-          duration: 4,
+        userLog.error(`用户 ${name} 最终失败`, {
+          message: errMsg,
+          friendly: userFriendlyError(err),
         });
       }
     }
@@ -397,6 +398,7 @@ export const Homepage: React.FC = () => {
           message: `第 ${round} 轮重试`,
           description: `剩余 ${pending.length} 个用户，${ROUND_DELAY_MS / 1000} 秒后开始`,
           duration: 4,
+          placement: 'topRight',
         });
         await delay(ROUND_DELAY_MS);
 
@@ -431,26 +433,22 @@ export const Homepage: React.FC = () => {
       }
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
 
+      // 只弹一次汇总
       if (pending.length > 0) {
         notification.warning({
           message: '批量下载任务创建完成',
           description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 ${FAILED_USERS_FILE}`,
           duration: 6,
+          placement: 'topRight',
         });
       } else {
         notification.success({
           message: '批量下载任务创建完成',
           description: `成功 ${successCounter.count}${extraMsg}`,
           duration: 4,
+          placement: 'topRight',
         });
       }
-    } catch (err) {
-      console.error('批量下载出错:', err);
-      setBatchProgress(null);
-      setIsBatchRunning(false);
-      message.error('批量下载发生未知错误');
-    }
-  };
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-white">
