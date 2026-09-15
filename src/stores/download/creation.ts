@@ -1,10 +1,7 @@
 import { fs, path } from '@tauri-apps/api';
 import * as R from 'ramda';
 import dayjs from 'dayjs';
-import {
-  notification as antNotification,
-  message as antMessage,
-} from 'antd';
+import { notification as antNotification } from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
 import { getUserMedias, getUserTweets } from '../../twitter/api';
@@ -551,13 +548,10 @@ export async function runCreationTask(
     skipCount: totalSkip,
   });
 
+  // 只写日志，不弹窗（批量下载时会有汇总）
   logFn(
     'info',
     `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
-  );
-  // 短消息用 message，避免 notification 被挤压变形
-  antMessage.success(
-    `${user.screenName}：新增 ${allTasks.length}，跳过 ${totalSkip}`,
   );
   perf.measure(
     `runTask-${taskId}`,
@@ -599,14 +593,7 @@ export async function scheduleCreationTasks(): Promise<void> {
   } catch (err: any) {
     const errMsg = typeof err?.message === 'string' ? err.message : String(err);
     logFn('error', `任务最终失败: ${errMsg}`);
-    if (!isRateLimitError(errMsg)) {
-      antNotification.error({
-        message: '任务失败',
-        description: '请检查网络或稍后重试',
-        duration: 3,
-        placement: 'topRight',
-      });
-    }
+    // 任务失败只写日志，不弹窗（避免批量时炸屏）
   } finally {
     state.removeCreationTask(nextTask.id);
   }
