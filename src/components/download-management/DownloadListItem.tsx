@@ -45,8 +45,12 @@ const areEqual = (
   );
 };
 
-// 图片加载超时（毫秒）：本地原图可能几 MB~十几 MB，给足 30 秒
+// 图片加载超时（毫秒）
 const IMAGE_LOAD_TIMEOUT_MS = 30000;
+
+// ✅ 新增：模块级缓存，避免 react-window 反复卸载/挂载时重复检查文件
+//    key = gid，value = asset URL（null 表示检查过但文件不存在）
+const localThumbCache = new Map<string, string | null>();
 
 type ThumbKind = 'local' | 'net' | 'none';
 
@@ -76,6 +80,8 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
 
     useEffect(() => {
       let cancelled = false;
+
+      // 重置加载状态
       settledRef.current = false;
       setImageLoaded(false);
       setImageErrored(false);
@@ -84,48 +90,58 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         ? `${t.media.url}?format=jpg&name=thumb`
         : '';
 
-      setImgSrc(netUrl);
-      setThumbKind(netUrl ? 'net' : 'none');
-
-      console.log('[Thumb] task', {
-        gid: t.gid,
-        status: t.status,
-        mediaType: t.media.type,
-        mediaUrl: t.media.url,
-        dir: t.dir,
-        fileName: t.fileName,
-        netUrl,
-      });
-
-      const canUseLocalFile =
-        t.status === AriaStatus.Complete &&
-        t.media.type === MediaType.Photo &&
-        !!t.dir &&
-        !!t.fileName;
-
-      if (!canUseLocalFile) {
+      // ============ 分支 1：未完成 或 非图片类型 → 直接走网络 ============
+      if (t.status !== AriaStatus.Complete || t.media.type !== MediaType.Photo) {
+        setImgSrc(netUrl);
+        setThumbKind(netUrl ? 'net' : 'none');
         return () => {
           cancelled = true;
         };
       }
 
+      // ============ 分支 2：已完成 + 图片类型 + 有缓存 → 直接用缓存 ============
+      // ✅ 这是关键：滚回来重新挂载时，不会重新检查文件，直接就拿到本地 URL
+      if (localThumbCache.has(t.gid)) {
+        const cached = localThumbCache.get(t.gid);
+        if (cached) {
+          setImgSrc(cached);
+          setThumbKind('local');
+        } else {
+          // 缓存里是 null，说明检查过、文件不存在，走网络
+          setImgSrc(netUrl);
+          setThumbKind(netUrl ? 'net' : 'none');
+        }
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      // ============ 分支 3：已完成 + 图片类型 + 无缓存 → 首次检查 ============
+      // 先用网络图占位，避免空白（只在这条任务第一次显示时发生）
+      setImgSrc(netUrl);
+      setThumbKind(netUrl ? 'net' : 'none');
+
       (async () => {
         try {
           const localPath = await path.join(t.dir, t.fileName);
           const exists = await fs.exists(localPath);
-          console.log('[Thumb] local path', localPath, 'exists =', exists);
-          if (!exists || cancelled) return;
+          if (cancelled) return;
 
-          const assetUrl = convertFileSrc(localPath);
-          console.log('[Thumb] using asset url:', assetUrl);
-
-          settledRef.current = false;
-          setImageLoaded(false);
-          setImageErrored(false);
-          setImgSrc(assetUrl);
-          setThumbKind('local');
+          if (exists) {
+            const url = convertFileSrc(localPath);
+            localThumbCache.set(t.gid, url);
+            // 切换 imgSrc 前重置加载状态
+            settledRef.current = false;
+            setImageLoaded(false);
+            setImageErrored(false);
+            setImgSrc(url);
+            setThumbKind('local');
+          } else {
+            // 记下"检查过但不存在"，下次滚回来不再重复检查
+            localThumbCache.set(t.gid, null);
+          }
         } catch (e) {
-          console.warn('[Thumb] local file check failed, fallback to net', e);
+          console.warn('[Thumb] check failed, fallback to net', e);
         }
       })();
 
@@ -134,7 +150,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       };
     }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
 
-    // 超时兜底：imgSrc 变化后，IMAGE_LOAD_TIMEOUT_MS 内如果还没结算，就当作加载失败
+    // 超时兜底
     useEffect(() => {
       if (!imgSrc) return;
       const timer = window.setTimeout(() => {
@@ -148,10 +164,18 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       return () => window.clearTimeout(timer);
     }, [imgSrc]);
 
+    // 删除任务时，顺便清掉缓存
+    const handleRemove = async (gid: string) => {
+      localThumbCache.delete(gid);
+      await removeDownloadTask(gid);
+    };
+
     const actionRedownload: TaskAction = {
       name: '重新下载',
       onClick: async () => {
         try {
+          // 重下会生成新 gid，顺便清掉旧缓存
+          localThumbCache.delete(t.gid);
           await redownloadTask(t.gid);
           message.success('已开始重新下载该任务');
         } catch (err) {
@@ -194,7 +218,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             title: '删除任务',
           })
         ) {
-          await removeDownloadTask(t.gid);
+          await handleRemove(t.gid);
         }
       },
       icon: <DeleteFilled />,
@@ -234,7 +258,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
-    // 诊断标签：L=本地, N=网络, -=无；错误时红
     const tagText =
       thumbKind === 'local' ? 'L' : thumbKind === 'net' ? 'N' : '-';
     const tagColor = imageErrored
