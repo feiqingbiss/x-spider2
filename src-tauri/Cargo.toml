@@ -15,12 +15,8 @@ tauri = { version = "1.5", features = [ "shell-all", "fs-all", "path-all", "os-a
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# ✅ 优化：完全禁用 native-tls，只用 rustls-tls。
-# native-tls 走 Windows Schannel，会触发 80092013（吊销服务器脱机）错误；
-# rustls 自带 Mozilla 的根证书，不受 Windows 证书服务影响，也不需要 danger_accept_invalid_certs。
 reqwest = { version = "0.11", default-features = false, features = ["json", "gzip", "rustls-tls", "cookies"] }
 
-# 强制锁定 time 版本，解决 Rust 编译器版本过新导致的类型推导报错
 time = "=0.3.36"
 
 [features]
