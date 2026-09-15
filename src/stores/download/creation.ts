@@ -21,6 +21,24 @@ const PRE_CHECK_COUNT = 20;
 const LOW_EXIST_RATIO_THRESHOLD = 0.15;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
+// ✅ 新增：不活跃阈值。预检时拉取的前 20 条帖文里，
+// 最新一条早于 (now - 180 天) 就算"不活跃"
+const INACTIVE_THRESHOLD_DAYS = 180;
+
+// ✅ 新增：模块级 Set，收集被预检判定为不活跃的用户名。
+// 前端通过 drainInactiveUsers() 取出，写完 failed_users.txt 后清空。
+const inactiveUsers = new Set<string>();
+
+/**
+ * 取出并清空"不活跃用户"集合。
+ * 前端在批量下载结束后调用，把结果合并到 failed_users.txt。
+ */
+export function drainInactiveUsers(): string[] {
+  const list = Array.from(inactiveUsers);
+  inactiveUsers.clear();
+  return list;
+}
+
 // ===================== API 限流器（全局） =====================
 const MIN_API_INTERVAL_MS = 7000;
 const MAX_JITTER_MS = 3000;
@@ -455,6 +473,35 @@ async function indexBySource(
   return { tasks, skipCount, success: true };
 }
 
+// ===================== 不活跃检测 =====================
+/**
+ * ✅ 新增：复用预检已经拉取到的前 20 条帖文，判断用户是否超过
+ * INACTIVE_THRESHOLD_DAYS 天未发帖。无论结果如何，都不影响下载流程，
+ * 只是往 inactiveUsers 里加一个标记，供前端稍后 drain。
+ */
+function checkAndMarkInactive(
+  user: TwitterUser,
+  preCheckResult: PreCheckResult,
+): void {
+  // 预检失败时不判断，避免网络问题误标
+  if (!preCheckResult.success) return;
+
+  const posts = preCheckResult.cache?.posts ?? [];
+  const latestPost = posts[0];
+  const latestTime = latestPost?.createdAt;
+
+  const isInactive =
+    !latestTime || dayjs().diff(latestTime, 'day') > INACTIVE_THRESHOLD_DAYS;
+
+  if (isInactive) {
+    inactiveUsers.add(user.screenName);
+    logFn(
+      'info',
+      `用户 ${user.screenName} 已超过 ${INACTIVE_THRESHOLD_DAYS} 天未发帖，标记为不活跃（仍会继续下载）`,
+    );
+  }
+}
+
 // ===================== 核心任务执行 =====================
 export async function runCreationTask(
   task: CreationTask,
@@ -471,6 +518,9 @@ export async function runCreationTask(
     logFn('warn', `用户 ${user.screenName} 预检失败，本次跳过`);
     return;
   }
+
+  // ✅ 新增：复用预检数据判断活跃度。不影响下载，只是打个标记
+  checkAndMarkInactive(user, preCheckResult);
 
   if (preCheckResult.totalMediaCount === 0) {
     logFn('info', `用户 ${user.screenName} 无媒体，跳过`);

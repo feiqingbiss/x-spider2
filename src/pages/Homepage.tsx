@@ -28,6 +28,7 @@ import { buildUserUrl } from '../twitter/url';
 import { path, fs } from '@tauri-apps/api';
 import { getUser } from '../twitter/api';
 import { useDownloadStore } from '../stores/download';
+import { drainInactiveUsers } from '../stores/download/creation';
 import { UserListManager } from '../components/homepage/UserListManager';
 import { useSettingsStore } from '../stores/settings';
 import { delay } from '../utils';
@@ -39,6 +40,9 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 8000;
 const ROUND_DELAY_MS = 30000;
 const RETRY_ROUNDS = 2;
+
+// ✅ 批量结束后，等待 creationTasks 跑完的最长时间（毫秒）
+const WAIT_CREATION_TASKS_MAX_MS = 60000;
 
 const FAILED_USERS_FILE = 'failed_users.txt';
 
@@ -339,9 +343,25 @@ export const Homepage: React.FC = () => {
         return;
       }
       await fs.writeTextFile(filePath, failed.join('\n'));
-      console.log(`已写入失败用户到 ${filePath}`);
+      console.log(`已写入 ${failed.length} 个用户名到 ${filePath}`);
     } catch (err) {
       console.error('写入失败用户文件失败:', err);
+    }
+  };
+
+  /**
+   * ✅ 新增：等待所有 creationTasks 跑完（预检 + 下载任务创建）。
+   * 最长等 WAIT_CREATION_TASKS_MAX_MS，避免无限等待。
+   */
+  const waitForCreationTasksDone = async (): Promise<void> => {
+    // 给 creationTasks 一点入队时间
+    await delay(500);
+    const startTs = Date.now();
+    while (
+      useDownloadStore.getState().creationTasks.length > 0 &&
+      Date.now() - startTs < WAIT_CREATION_TASKS_MAX_MS
+    ) {
+      await delay(1000);
     }
   };
 
@@ -437,8 +457,23 @@ export const Homepage: React.FC = () => {
         pending = stillFailed;
       }
 
+      // ✅ 新增：等所有 creationTasks 跑完，这样预检阶段收集的不活跃用户
+      //            才能被完整 drain 出来
+      setBatchProgress({
+        total,
+        completed: total,
+        currentUser: '等待任务收尾...',
+      });
+      await waitForCreationTasksDone();
+
       await fetchUserListCount();
-      await writeFailedUsersFile(pending);
+
+      // ✅ 新增：取出 creation.ts 里预检阶段收集的不活跃用户
+      const inactiveUsers = drainInactiveUsers();
+
+      // ✅ 合并"下载失败"和"不活跃"两类，去重后一次性覆盖写入 failed_users.txt
+      const finalList = Array.from(new Set([...pending, ...inactiveUsers]));
+      await writeFailedUsersFile(finalList);
 
       const extras: string[] = [];
       if (timeoutCounter.count > 0) {
@@ -447,13 +482,16 @@ export const Homepage: React.FC = () => {
       if (pending.length > 0) {
         extras.push(`失败 ${pending.length} 个`);
       }
+      if (inactiveUsers.length > 0) {
+        extras.push(`不活跃 ${inactiveUsers.length} 个`);
+      }
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
 
       // 只弹一次汇总
-      if (pending.length > 0) {
+      if (finalList.length > 0) {
         notification.warning({
           message: '批量下载任务创建完成',
-          description: `成功 ${successCounter.count}，${extraMsg}。失败用户已保存到 ${FAILED_USERS_FILE}`,
+          description: `成功 ${successCounter.count}，${extraMsg}。名单已保存到 ${FAILED_USERS_FILE}`,
           duration: 6,
           placement: 'topRight',
         });
