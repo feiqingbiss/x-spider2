@@ -1,11 +1,11 @@
 [package]
 name = "x-spider"
-version = "0.0.1"
+version = "0.0.0"
 description = "A spider for X (Twitter)"
 authors = ["you"]
 license = ""
 repository = ""
-edition = "2025"
+edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "1.5", features = [] }
