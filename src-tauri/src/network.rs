@@ -35,8 +35,8 @@ pub async fn network_fetch(
   let client = {
     let mut b = reqwest::Client::builder();
 
-    // 核心修复：跳过证书吊销检查，解决 Windows 报错 (80092013)
-    b = b.danger_accept_invalid_certs(true);
+    // ✅ 优化：删除了 danger_accept_invalid_certs(true)。
+    // 使用 rustls-tls 后，证书验证不再依赖 Windows Schannel，无需再跳过校验。
 
     // Auto set proxy settings
     if enable_proxy {
@@ -44,8 +44,10 @@ pub async fn network_fetch(
         // Use system proxy, do nothing
       } else {
         // Use custom proxy url
-        let proxy_http = reqwest::Proxy::http(proxy_url.clone()).map_err(|_| "Failed to set proxy url".to_string())?;
-        let proxy_https = reqwest::Proxy::https(proxy_url.clone()).map_err(|_| "Failed to set proxy url".to_string())?;
+        let proxy_http = reqwest::Proxy::http(proxy_url.clone())
+          .map_err(|_| "Failed to set proxy url".to_string())?;
+        let proxy_https = reqwest::Proxy::https(proxy_url.clone())
+          .map_err(|_| "Failed to set proxy url".to_string())?;
         b = b.proxy(proxy_http).proxy(proxy_https);
       }
     } else {
@@ -53,7 +55,8 @@ pub async fn network_fetch(
       b = b.no_proxy();
     }
 
-    b.build().map_err(|_| "Failed to build reqwest client".to_string())
+    b.build()
+      .map_err(|_| "Failed to build reqwest client".to_string())
   }?;
 
   // Build request
@@ -77,7 +80,8 @@ pub async fn network_fetch(
   let status = response.status().as_u16();
   let resp_headers = {
     let reqwest_headers = response.headers();
-    let mut h: HashMap<String, Vec<String>> = HashMap::with_capacity(reqwest_headers.len());
+    let mut h: HashMap<String, Vec<String>> =
+      HashMap::with_capacity(reqwest_headers.len());
 
     for (k, v) in reqwest_headers {
       let v = v.to_str();
@@ -86,7 +90,8 @@ pub async fn network_fetch(
       }
 
       let v = v.unwrap().to_string();
-      h.entry(k.to_string()).and_modify(|arr: &mut Vec<String>| arr.push(v.clone()))
+      h.entry(k.to_string())
+        .and_modify(|arr: &mut Vec<String>| arr.push(v.clone()))
         .or_insert_with(|| vec![v]);
     }
 
@@ -97,26 +102,32 @@ pub async fn network_fetch(
   let body: Value = {
     match response_type.as_str() {
       "json" => response.json().await.map_err(map_reqwest_err),
-      "text" => response.text().await.map_err(map_reqwest_err).map(Value::String),
+      "text" => response
+        .text()
+        .await
+        .map_err(map_reqwest_err)
+        .map(Value::String),
       "binary" => {
         let bytes = response.bytes().await.map_err(map_reqwest_err)?;
         serde_json::to_value(bytes.to_vec()).map_err(|err| err.to_string())
-      },
-      _ => Err("Unsupported response type".to_string())
+      }
+      _ => Err("Unsupported response type".to_string()),
     }
   }?;
 
   Ok(Response {
     status,
     body,
-    headers: resp_headers 
+    headers: resp_headers,
   })
 }
 
 #[tauri::command]
 pub async fn network_get_system_proxy_url() -> Result<HashMap<String, String>, ()> {
-  // 适配官方 reqwest：删除原作者私有的 get_system_proxy_map 逻辑
-  // 默认返回空 HashMap，reqwest 客户端在构建时会自动处理系统环境变量
+  // 说明：当前版本未实现系统代理的读取，返回空 Map。
+  // 前端在 proxy.useSystem = true 时会把空字符串传给 reqwest，
+  // reqwest 会走它自己的环境变量（HTTPS_PROXY 等）逻辑。
+  // 如果将来要实现真正的系统代理读取，可以在这里接入平台 API。
   let mapped_proxies: HashMap<String, String> = HashMap::new();
   Ok(mapped_proxies)
 }

@@ -3,6 +3,7 @@ import { dialog } from '@tauri-apps/api';
 import { Button } from 'antd';
 import * as R from 'ramda';
 import React, { useCallback, useMemo, useRef, useState, useDeferredValue } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { FixedSizeList } from 'react-window';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
@@ -25,19 +26,22 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   onInScreenTasksChanged,
   batchActions,
 }) => {
+  // ✅ 优化：useShallow
   const {
     downloadTasks,
     pauseAllDownloadTask,
     unpauseAllDownloadTask,
     batchRemoveDownloadTasks,
     batchRedownloadTask,
-  } = useDownloadStore((s) => ({
-    downloadTasks: s.downloadTasks,
-    pauseAllDownloadTask: s.pauseAllDownloadTask,
-    unpauseAllDownloadTask: s.unpauseAllDownloadTask,
-    batchRemoveDownloadTasks: s.batchRemoveDownloadTasks,
-    batchRedownloadTask: s.batchRedownloadTask,
-  }));
+  } = useDownloadStore(
+    useShallow((s) => ({
+      downloadTasks: s.downloadTasks,
+      pauseAllDownloadTask: s.pauseAllDownloadTask,
+      unpauseAllDownloadTask: s.unpauseAllDownloadTask,
+      batchRemoveDownloadTasks: s.batchRemoveDownloadTasks,
+      batchRedownloadTask: s.batchRedownloadTask,
+    })),
+  );
   const [listHeight, setListHeight] = useState(600);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -52,11 +56,12 @@ export const DownloadList: React.FC<DownloadListProps> = ({
 
   useEventListener('resize', updateListHeight);
 
+  // ✅ 优化：用普通函数代替 R.pipe 泛型体操，可读性更好
   const filterTasks = useCallback(
-    R.pipe<[DownloadTask[]], DownloadTask[], DownloadTask[]>(
-      R.filter(filter),
-      sort ? R.sort(sort) : R.identity,
-    ),
+    (tasks: DownloadTask[]) => {
+      const filtered = R.filter(filter, tasks);
+      return sort ? R.sort(sort, filtered) : filtered;
+    },
     [sort, filter],
   );
 
@@ -64,7 +69,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
     return filterTasks(downloadTasks);
   }, [downloadTasks, filterTasks]);
 
-  // 使用 useDeferredValue 让列表更新延后，避免阻塞主线程
   const deferredTasks = useDeferredValue(tasks);
 
   const pauseAll = async () => {
@@ -157,11 +161,7 @@ export const DownloadList: React.FC<DownloadListProps> = ({
           }}
         >
           {({ index, style, data }) => (
-            <div
-              style={{
-                ...style,
-              }}
-            >
+            <div style={{ ...style }}>
               <DownloadListItem
                 itemClientHeight={ITEM_CLIENT_HEIGHT}
                 itemGap={ITEM_GAP}

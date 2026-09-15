@@ -11,6 +11,7 @@ import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
 import { buildPostUrl, buildUserUrl } from '../../twitter/url';
@@ -24,7 +25,10 @@ export interface DownloadListItemProps {
   itemGap: number;
 }
 
-const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemProps) => {
+const areEqual = (
+  prevProps: DownloadListItemProps,
+  nextProps: DownloadListItemProps,
+) => {
   const prev = prevProps.task;
   const next = nextProps.task;
   return (
@@ -43,19 +47,20 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     const { message } = App.useApp();
     const [imageLoaded, setImageLoaded] = useState(false);
 
+    // ✅ 优化：useShallow + 清理未使用的字段
     const {
       removeDownloadTask,
       pauseDownloadTask,
       unpauseDownloadTask,
       redownloadTask,
-    } = useDownloadStore((s) => ({
-      removeDownloadTask: s.removeDownloadTask,
-      pauseDownloadTask: s.pauseDownloadTask,
-      unpauseDownloadTask: s.unpauseDownloadTask,
-      batchRemoveDownloadTasks: s.batchRemoveDownloadTasks,
-      redownloadTask: s.redownloadTask,
-      batchRedownloadTask: s.batchRedownloadTask,
-    }));
+    } = useDownloadStore(
+      useShallow((s) => ({
+        removeDownloadTask: s.removeDownloadTask,
+        pauseDownloadTask: s.pauseDownloadTask,
+        unpauseDownloadTask: s.unpauseDownloadTask,
+        redownloadTask: s.redownloadTask,
+      })),
+    );
 
     const actionRedownload: TaskAction = {
       name: '重新下载',
@@ -64,7 +69,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
           await redownloadTask(t.gid);
           message.success('已开始重新下载该任务');
         } catch (err) {
-          log.error(err);
+          window.log.error(err);
           dialog.message('无法重新下载文件', {
             type: 'error',
           });
@@ -150,7 +155,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         role="listitem"
         className="bg-white border-[1px] border-gray-300 rounded-md flex overflow-hidden"
       >
-        {/* 左侧缩略图区域 */}
         <div
           className="shrink-0 overflow-hidden relative bg-gray-100"
           style={{
@@ -158,7 +162,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             height: itemClientHeight,
           }}
         >
-          {/* 骨架占位（图片加载前显示） */}
           {!imageLoaded && (
             <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
               加载中...
@@ -182,13 +185,12 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
                 imageLoaded ? 'block' : 'hidden'
               }`}
               onLoad={() => setImageLoaded(true)}
-              onError={() => setImageLoaded(true)} // 加载失败也显示占位
+              onError={() => setImageLoaded(true)}
               alt="缩略图"
             />
           </a>
         </div>
 
-        {/* 右侧信息区 */}
         <div className="ml-4 overflow-hidden pr-4 w-full h-full">
           <p
             title={t.fileName}
@@ -232,7 +234,11 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
           </div>
           <div className="mt-0">
             <Progress
-              percent={Math.round((t.completeSize / t.totalSize) * 100)}
+              percent={
+                t.totalSize > 0
+                  ? Math.round((t.completeSize / t.totalSize) * 100)
+                  : 0
+              }
               className="mb-0 mr-0"
             />
           </div>
@@ -243,5 +249,5 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       </div>
     );
   },
-  areEqual
+  areEqual,
 );

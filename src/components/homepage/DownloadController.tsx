@@ -2,6 +2,7 @@
 import { App, Button, Checkbox, DatePicker, Form, Space } from 'antd';
 import dayjs from 'dayjs';
 import React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import MediaType from '../../enums/MediaType';
 import { DownloadFilter } from '../../interfaces/DownloadFilter';
 import { useDownloadStore } from '../../stores/download';
@@ -9,14 +10,15 @@ import { useHomepageStore } from '../../stores/homepage';
 
 export const DownloadController: React.FC = () => {
   const { message } = App.useApp();
-  const { filter, setFilter, user } = useHomepageStore((s) => ({
-    filter: s.filter,
-    setFilter: s.setFilter,
-    user: s.userInfo.data,
-  }));
-  const { createCreationTask } = useDownloadStore((s) => ({
-    createCreationTask: s.createCreationTask,
-  }));
+  // ✅ 优化：useShallow
+  const { filter, setFilter, user } = useHomepageStore(
+    useShallow((s) => ({
+      filter: s.filter,
+      setFilter: s.setFilter,
+      user: s.userInfo.data,
+    })),
+  );
+  const createCreationTask = useDownloadStore((s) => s.createCreationTask);
 
   const onStartDownload = async () => {
     if (!user) {
@@ -33,7 +35,7 @@ export const DownloadController: React.FC = () => {
       createCreationTask(user, filter);
       message.success('已成功创建下载任务，请到下载管理页查看');
     } catch (err: any) {
-      log.error(err);
+      window.log.error(err);
       message.error('创建下载任务失败');
     }
   };

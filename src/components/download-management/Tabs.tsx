@@ -1,5 +1,6 @@
 /* eslint-disable react/prop-types */
 import React, { useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDownloadStore } from '../../stores/download';
 import clsx from 'clsx';
 import { AriaStatus } from '../../utils/aria2';
@@ -17,19 +18,20 @@ export interface TabsProps {
 }
 
 export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
+  // ✅ 优化：useShallow
   const { currentTab, setCurrentTab, downloadTasks } = useDownloadStore(
-    (s) => ({
+    useShallow((s) => ({
       currentTab: s.currentTab,
       setCurrentTab: s.setCurrentTab,
       downloadTasks: s.downloadTasks,
-    }),
+    })),
   );
 
   useEffect(() => {
     if (!currentTab) {
       setCurrentTab(tabs[0].name);
     }
-  }, [currentTab, tabs]);
+  }, [currentTab, tabs, setCurrentTab]);
 
   const currentTabChildren = tabs.find(
     (tab) => tab.name === currentTab,

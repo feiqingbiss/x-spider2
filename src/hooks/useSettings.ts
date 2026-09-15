@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useSettingsStore } from '../stores/settings';
 import * as R from 'ramda';
 
@@ -10,10 +11,13 @@ export function useSettings<T>(
   name: string,
   key: string,
 ): UseSettingsReturn<T> {
-  const [value, updateOne] = useSettingsStore((state) => [
-    R.path<T>([name, key])(state),
-    state.updateOne,
-  ]);
+  // ✅ 优化：useShallow
+  const [value, updateOne] = useSettingsStore(
+    useShallow((state) => [
+      R.path<T>([name, key])(state),
+      state.updateOne,
+    ]),
+  );
 
   return {
     value: value as T,

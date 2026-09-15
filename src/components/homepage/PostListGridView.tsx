@@ -4,6 +4,7 @@ import { App } from 'antd';
 import dayjs from 'dayjs';
 import * as R from 'ramda';
 import React, { useCallback, useEffect, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import MediaType from '../../enums/MediaType';
 import { TwitterMedia } from '../../interfaces/TwitterMedia';
 import { TwitterPost } from '../../interfaces/TwitterPost';
@@ -15,10 +16,13 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 
 export const PostListGridView: React.FC = () => {
   const { message } = App.useApp();
-  const { userInfo, postList } = useHomepageStore((state) => ({
-    postList: state.postList,
-    userInfo: state.userInfo,
-  }));
+  // ✅ 优化：useShallow
+  const { userInfo, postList } = useHomepageStore(
+    useShallow((state) => ({
+      postList: state.postList,
+      userInfo: state.userInfo,
+    })),
+  );
   const loadPostList = useHomepageStore((s) => s.loadPostList);
   const createDownloadTask = useDownloadStore(
     (state) => state.createDownloadTask,
@@ -26,7 +30,6 @@ export const PostListGridView: React.FC = () => {
 
   const userId = userInfo.data?.id;
 
-  // 监听用户变化，主动触发重新加载
   useEffect(() => {
     if (userId) {
       loadPostList().catch((err) => {
@@ -118,7 +121,7 @@ export const PostListGridView: React.FC = () => {
               });
               message.success('已添加到下载队列');
             } catch (err: any) {
-              log.error(err);
+              window.log.error(err);
               message.error(`创建下载任务失败：${err?.message}`);
             }
           }

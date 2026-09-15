@@ -1,6 +1,7 @@
 /* eslint-disable react/prop-types */
 import { App, Avatar, Form, Input, Modal } from 'antd';
 import React, { useEffect, useState, memo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStateStore } from '../stores/app-state';
 import { getAccountInfo } from '../twitter/api';
 import { TwitterAccountInfo } from '../interfaces/TwitterAccountInfo';
@@ -11,10 +12,10 @@ import { parseCookie, stringifyCookie } from '../utils/cookie';
 import clsx from 'clsx';
 
 export const Account: React.FC = memo(() => {
-  const [cookieString, setCookieString] = useAppStateStore((state) => [
-    state.cookieString,
-    state.setCookieString,
-  ]);
+  // ✅ 优化：使用 useShallow，避免返回新数组导致多余重渲染
+  const [cookieString, setCookieString] = useAppStateStore(
+    useShallow((state) => [state.cookieString, state.setCookieString]),
+  );
   const [modalOpen, setModalOpen] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [accountInfo, setAccountInfo] = useState<TwitterAccountInfo | null>(
@@ -35,13 +36,13 @@ export const Account: React.FC = memo(() => {
           setAccountInfo(accountInfo);
         } catch (err: any) {
           message.error('获取账号信息失败，请检查 Cookie 或代理配置是否正确');
-          log.error(err);
+          window.log.error(err);
         } finally {
           setLoading(false);
         }
       }
     })();
-  }, [cookieString]);
+  }, [cookieString, message]);
 
   const onFormFinished = async (values: any) => {
     setModalLoading(true);
@@ -53,7 +54,7 @@ export const Account: React.FC = memo(() => {
       setModalOpen(false);
       setCookieString(newCookieString);
     } catch (err: any) {
-      log.error(err);
+      window.log.error(err);
       message.error('无法登录，请检查 Cookie 或代理配置是否正确');
     } finally {
       setModalLoading(false);
