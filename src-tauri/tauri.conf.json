@@ -10,7 +10,6 @@
     "version": "../package.json"
   },
   "tauri": {
-    "devtools": true,
     "allowlist": {
       "all": false,
       "app": {

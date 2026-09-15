@@ -3,12 +3,20 @@
 
 mod network;
 
+use tauri::Manager;
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
           network::network_fetch,
           network::network_get_system_proxy_url,
         ])
+        .setup(|app| {
+            if let Some(window) = app.get_window("main") {
+                window.open_devtools();
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
