@@ -45,8 +45,8 @@ const areEqual = (
   );
 };
 
-// 图片加载超时（毫秒）：超过这个时间既没 onLoad 也没 onError，判定为失败
-const IMAGE_LOAD_TIMEOUT_MS = 5000;
+// 图片加载超时（毫秒）：本地原图可能几 MB~十几 MB，给足 30 秒
+const IMAGE_LOAD_TIMEOUT_MS = 30000;
 
 type ThumbKind = 'local' | 'net' | 'none';
 
@@ -58,7 +58,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     const [imgSrc, setImgSrc] = useState('');
     const [thumbKind, setThumbKind] = useState<ThumbKind>('none');
 
-    // 记录当前 imgSrc 是否已经有结果（成功/失败），避免超时定时器误伤
     const settledRef = useRef(false);
 
     const {
@@ -85,7 +84,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         ? `${t.media.url}?format=jpg&name=thumb`
         : '';
 
-      // 步骤 1：先同步设网络缩略图（保证 imgSrc 不为空）
       setImgSrc(netUrl);
       setThumbKind(netUrl ? 'net' : 'none');
 
@@ -99,7 +97,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         netUrl,
       });
 
-      // 步骤 2：已完成 + 图片类型 + 有本地路径 → 尝试用本地文件替换
       const canUseLocalFile =
         t.status === AriaStatus.Complete &&
         t.media.type === MediaType.Photo &&
@@ -122,7 +119,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
           const assetUrl = convertFileSrc(localPath);
           console.log('[Thumb] using asset url:', assetUrl);
 
-          // 切到本地文件，重置状态等新的 onLoad / onError
           settledRef.current = false;
           setImageLoaded(false);
           setImageErrored(false);
@@ -238,7 +234,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
-    // 诊断标签：L=本地, N=网络, -=无；错误时额外标红
+    // 诊断标签：L=本地, N=网络, -=无；错误时红
     const tagText =
       thumbKind === 'local' ? 'L' : thumbKind === 'net' ? 'N' : '-';
     const tagColor = imageErrored
@@ -267,8 +263,11 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             </div>
           )}
           {imgSrc && !imageLoaded && !imageErrored && (
-            <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
-              加载中...
+            <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
+              <span>加载中...</span>
+              {thumbKind === 'local' && (
+                <span className="text-[10px] mt-1 opacity-70">本地原图</span>
+              )}
             </div>
           )}
           {imgSrc && imageErrored && (
@@ -307,7 +306,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
               />
             )}
           </a>
-          {/* 诊断角标，定位问题后可以删掉 */}
           <div
             className="absolute right-1 bottom-1 px-1 rounded text-[10px] leading-4 text-white font-bold"
             style={{ background: tagColor }}
