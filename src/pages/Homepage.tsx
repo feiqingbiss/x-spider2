@@ -281,8 +281,10 @@ export const Homepage: React.FC = () => {
       );
 
       await Promise.all(
-        batch.map(async (name) => {
-          const index = i + batch.indexOf(name);
+        batch.map(async (name, j) => {
+          // ✅ 已修复：用 map 的索引 j 而不是 batch.indexOf(name)，
+          //            否则遇到重名用户时进度会算错
+          const index = i + j;
           setBatchProgress({
             total: progressTotal,
             completed: progressBase + index,
@@ -418,10 +420,7 @@ export const Homepage: React.FC = () => {
         pending = stillFailed;
       }
 
-      setBatchProgress(null);
-      setIsBatchRunning(false);
       await fetchUserListCount();
-
       await writeFailedUsersFile(pending);
 
       const extras: string[] = [];
@@ -449,6 +448,15 @@ export const Homepage: React.FC = () => {
           placement: 'topRight',
         });
       }
+    // ✅ 已修复：补齐 catch / finally，并闭合 batchDownload 函数
+    } catch (err: any) {
+      window.log.error('批量下载失败', err);
+      message.error(`批量下载失败：${err?.message || '未知错误'}`);
+    } finally {
+      setBatchProgress(null);
+      setIsBatchRunning(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-white">

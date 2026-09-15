@@ -3,24 +3,24 @@ import { useEffect } from 'react';
 import { getSystemProxy } from '../../ipc/network';
 import { useAppStateStore } from '../../stores/app-state';
 
-export function usePollSystemProxyUrl() {
-  const { url, setUrl } = useAppStateStore((state) => ({
-    url: state.systemProxyUrl,
-    setUrl: state.setSystemProxyUrl,
-  }));
+// ✅ 已修复：新增 enabled 参数，只有真正使用系统代理时才轮询
+export function usePollSystemProxyUrl(enabled: boolean) {
+  const setUrl = useAppStateStore((state) => state.setSystemProxyUrl);
   const unmountedRef = useUnmountedRef();
 
   useEffect(() => {
-    let timeoutId: number;
+    if (!enabled) return;
+
+    let timeoutId: ReturnType<typeof setTimeout>;
 
     const poll = async () => {
       try {
         const newUrl = await getSystemProxy();
-        if (!unmountedRef.current && newUrl !== url) {
+        if (!unmountedRef.current) {
           setUrl(newUrl);
         }
       } catch (err: any) {
-        log.error('Get system proxy failed', err);
+        window.log.error('Get system proxy failed', err);
       }
 
       timeoutId = setTimeout(poll, 1000);
@@ -30,5 +30,6 @@ export function usePollSystemProxyUrl() {
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [url, setUrl]);
+    // ✅ 已修复：去掉 url 依赖，避免无限重建轮询
+  }, [enabled, setUrl, unmountedRef]);
 }

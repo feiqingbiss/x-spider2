@@ -13,6 +13,9 @@ export interface InfiniteScrollProps
   threshold?: number;
 }
 
+// ✅ 已修复：最多连续请求 50 次，防止死循环
+const MAX_CONSECUTIVE_LOADS = 50;
+
 export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   requestFn,
   threshold = -1,
@@ -36,7 +39,12 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
     let shouldContinueRequest =
       el.scrollHeight - el.scrollTop <= el.clientHeight + thresholdReal;
 
-    while (shouldContinueRequest && !unmountedRef.current) {
+    let guard = 0;
+    while (
+      shouldContinueRequest &&
+      !unmountedRef.current &&
+      guard++ < MAX_CONSECUTIVE_LOADS
+    ) {
       loadingRef.current = true;
 
       try {
@@ -48,7 +56,7 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
         paramRef.current.hasMore &&
         el.scrollHeight - el.scrollTop <= el.clientHeight + thresholdReal;
     }
-  }, [requestFn]);
+  }, [requestFn, threshold, unmountedRef]);
 
   useEffect(() => {
     onScroll();

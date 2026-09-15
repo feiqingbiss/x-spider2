@@ -1,5 +1,5 @@
 import { useDebounceFn } from 'ahooks';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSettings } from '../../hooks/useSettings';
 import { useSectionContext } from './Section';
 import * as R from 'ramda';
@@ -81,17 +81,19 @@ export const Item: React.FC<ItemProps> = ({
         )}
       </div>
       <FormItem noStyle validateStatus={errorMessage ? 'error' : 'success'}>
-        <children.type
-          aria-labelledby={labelId}
-          aria-describedby={descriptionId}
-          id={uniqueId}
-          onChange={async (e: any) => {
+        {/* ✅ 已修复：用 cloneElement，让我们的 props 覆盖 children 自带的，避免 id / onChange 被覆盖 */}
+        {React.cloneElement(children, {
+          ...(children.props as any),
+          'aria-labelledby': labelId,
+          'aria-describedby': descriptionId,
+          id: uniqueId,
+          onChange: async (e: any) => {
             const val = e?.target ? e.target[valuePropName] : e;
             setInternalValue(val);
             debouncedTrySetValue.run(val);
-          }}
-          {...{ [valuePropName]: internalValue, ...children.props }}
-        />
+          },
+          [valuePropName]: internalValue,
+        })}
         {errorMessage && (
           <div className="text-sm text-ant-color-error mt-1">
             {errorMessage}

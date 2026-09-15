@@ -17,7 +17,12 @@ export function useCheckUpdate() {
     const release = await getLatestReleases(pre);
     setLastCheckUpdateTime(Date.now());
 
-    const latestVersion = release.tag_name.slice(1) as string;
+    // ✅ 已修复：release 可能为 null，先判断再使用
+    if (!release) {
+      return false;
+    }
+
+    const latestVersion = (release.tag_name as string).slice(1);
     setLatestVersion(latestVersion);
     setLatestUrl(release.html_url);
     if (isVersionGt(latestVersion, PACKAGE_JSON_VERSION)) {
