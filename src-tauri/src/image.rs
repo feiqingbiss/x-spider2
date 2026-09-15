@@ -1,5 +1,5 @@
 use base64::Engine;
-use image::{GenericImageView, ImageFormat};
+use image::GenericImageView;
 use std::fs;
 use std::io::Cursor;
 
