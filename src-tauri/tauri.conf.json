@@ -52,6 +52,11 @@
       "fs": {
         "all": true,
         "scope": ["**"]
+      },
+      // ✅ 修正：在 Tauri v1 中，Asset Protocol 配置在 allowlist.protocol 下
+      "protocol": {
+        "asset": true,
+        "assetScope": ["**"]
       }
     },
     "bundle": {
@@ -72,11 +77,8 @@
       ]
     },
     "security": {
-      "csp": null,
-      "assetProtocol": {
-        "enable": true,
-        "scope": ["**"]
-      }
+      // ✅ 修正：在 CSP 中允许 asset 协议和 asset.localhost
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data:;"
     },
     "windows": [
       {
