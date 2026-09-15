@@ -1,7 +1,10 @@
 import { fs, path } from '@tauri-apps/api';
 import * as R from 'ramda';
 import dayjs from 'dayjs';
-import { notification as antNotification } from 'antd';
+import {
+  notification as antNotification,
+  message as antMessage,
+} from 'antd';
 import { CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
 import { getUserMedias, getUserTweets } from '../../twitter/api';
@@ -18,8 +21,6 @@ import { CreateDownloadTaskParams } from './types';
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
 const PRE_CHECK_COUNT = 20;
-// 前 20 条已下载比例 < 15% → 全量索引
-// 前 20 条已下载比例 >= 15% → 仅补全前 20 条里缺失的
 const LOW_EXIST_RATIO_THRESHOLD = 0.15;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
@@ -112,6 +113,7 @@ function notifyRateLimitOnce(cooldownSeconds: number) {
     message: '请求过于频繁',
     description: `已自动暂停约 ${cooldownSeconds} 秒后继续`,
     duration: 5,
+    placement: 'topRight',
   });
 }
 
@@ -478,7 +480,6 @@ export async function runCreationTask(
     return;
   }
 
-  // 读取开关（独立于 Homepage，单独下载时也生效）
   const forceFullScan = useAppStateStore.getState().forceFullScan;
 
   const ratioPercent = (preCheckResult.ratio * 100).toFixed(0);
@@ -554,11 +555,10 @@ export async function runCreationTask(
     'info',
     `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
   );
-  antNotification.success({
-    message: `${user.screenName} 完成`,
-    description: `新增 ${allTasks.length}, 跳过 ${totalSkip}`,
-    duration: 3,
-  });
+  // 短消息用 message，避免 notification 被挤压变形
+  antMessage.success(
+    `${user.screenName}：新增 ${allTasks.length}，跳过 ${totalSkip}`,
+  );
   perf.measure(
     `runTask-${taskId}`,
     `runTask-${taskId}-start`,
@@ -604,6 +604,7 @@ export async function scheduleCreationTasks(): Promise<void> {
         message: '任务失败',
         description: '请检查网络或稍后重试',
         duration: 3,
+        placement: 'topRight',
       });
     }
   } finally {
