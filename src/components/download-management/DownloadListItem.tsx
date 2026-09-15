@@ -11,7 +11,7 @@ import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { convertFileSrc } from '@tauri-apps/api/tauri';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
-import React, { memo, useEffect, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
@@ -45,12 +45,21 @@ const areEqual = (
   );
 };
 
+// 图片加载超时（毫秒）：超过这个时间既没 onLoad 也没 onError，判定为失败
+const IMAGE_LOAD_TIMEOUT_MS = 5000;
+
+type ThumbKind = 'local' | 'net' | 'none';
+
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
     const { message } = App.useApp();
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageErrored, setImageErrored] = useState(false);
     const [imgSrc, setImgSrc] = useState('');
+    const [thumbKind, setThumbKind] = useState<ThumbKind>('none');
+
+    // 记录当前 imgSrc 是否已经有结果（成功/失败），避免超时定时器误伤
+    const settledRef = useRef(false);
 
     const {
       removeDownloadTask,
@@ -68,16 +77,19 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
 
     useEffect(() => {
       let cancelled = false;
+      settledRef.current = false;
       setImageLoaded(false);
       setImageErrored(false);
 
-      // 步骤 1：先同步设网络缩略图作为兜底（保证 imgSrc 不为空）
       const netUrl = t.media.url
         ? `${t.media.url}?format=jpg&name=thumb`
         : '';
-      setImgSrc(netUrl);
 
-      console.log('[Thumb]', {
+      // 步骤 1：先同步设网络缩略图（保证 imgSrc 不为空）
+      setImgSrc(netUrl);
+      setThumbKind(netUrl ? 'net' : 'none');
+
+      console.log('[Thumb] task', {
         gid: t.gid,
         status: t.status,
         mediaType: t.media.type,
@@ -87,7 +99,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         netUrl,
       });
 
-      // 步骤 2：如果是已完成 + 图片类型 + 有本地路径，尝试用本地文件替换
+      // 步骤 2：已完成 + 图片类型 + 有本地路径 → 尝试用本地文件替换
       const canUseLocalFile =
         t.status === AriaStatus.Complete &&
         t.media.type === MediaType.Photo &&
@@ -110,10 +122,12 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
           const assetUrl = convertFileSrc(localPath);
           console.log('[Thumb] using asset url:', assetUrl);
 
-          // 切到本地文件前，先把加载状态重置，等新的 onLoad 触发
+          // 切到本地文件，重置状态等新的 onLoad / onError
+          settledRef.current = false;
           setImageLoaded(false);
           setImageErrored(false);
           setImgSrc(assetUrl);
+          setThumbKind('local');
         } catch (e) {
           console.warn('[Thumb] local file check failed, fallback to net', e);
         }
@@ -123,6 +137,20 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         cancelled = true;
       };
     }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
+
+    // 超时兜底：imgSrc 变化后，IMAGE_LOAD_TIMEOUT_MS 内如果还没结算，就当作加载失败
+    useEffect(() => {
+      if (!imgSrc) return;
+      const timer = window.setTimeout(() => {
+        if (!settledRef.current) {
+          console.warn('[Thumb] load timeout for', imgSrc);
+          setImageErrored(true);
+          setImageLoaded(true);
+          settledRef.current = true;
+        }
+      }, IMAGE_LOAD_TIMEOUT_MS);
+      return () => window.clearTimeout(timer);
+    }, [imgSrc]);
 
     const actionRedownload: TaskAction = {
       name: '重新下载',
@@ -210,6 +238,17 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
+    // 诊断标签：L=本地, N=网络, -=无；错误时额外标红
+    const tagText =
+      thumbKind === 'local' ? 'L' : thumbKind === 'net' ? 'N' : '-';
+    const tagColor = imageErrored
+      ? 'rgba(220,38,38,0.85)'
+      : thumbKind === 'local'
+        ? 'rgba(22,163,74,0.85)'
+        : thumbKind === 'net'
+          ? 'rgba(37,99,235,0.85)'
+          : 'rgba(107,114,128,0.85)';
+
     return (
       <div
         role="listitem"
@@ -255,8 +294,12 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
                 className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
                   imageLoaded && !imageErrored ? 'block' : 'hidden'
                 }`}
-                onLoad={() => setImageLoaded(true)}
+                onLoad={() => {
+                  settledRef.current = true;
+                  setImageLoaded(true);
+                }}
                 onError={() => {
+                  settledRef.current = true;
                   setImageErrored(true);
                   setImageLoaded(true);
                 }}
@@ -264,6 +307,13 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
               />
             )}
           </a>
+          {/* 诊断角标，定位问题后可以删掉 */}
+          <div
+            className="absolute right-1 bottom-1 px-1 rounded text-[10px] leading-4 text-white font-bold"
+            style={{ background: tagColor }}
+          >
+            {tagText}
+          </div>
         </div>
 
         <div className="ml-4 overflow-hidden pr-4 w-full h-full">

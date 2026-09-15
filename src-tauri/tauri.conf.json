@@ -87,7 +87,8 @@
         "height": 920,
         "minWidth": 800,
         "minHeight": 600,
-        "decorations": true
+        "decorations": true,
+        "devtools": true
       }
     ]
   }
