@@ -8,14 +8,17 @@ import {
   PauseOutlined,
 } from '@ant-design/icons';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
+import { convertFileSrc } from '@tauri-apps/api/tauri';
 import { App, Avatar, Progress } from 'antd';
 import * as R from 'ramda';
-import React, { memo, useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
 import { buildPostUrl, buildUserUrl } from '../../twitter/url';
 import { showInFolder } from '../../utils/shell';
+import { AriaStatus } from '../../utils/aria2';
+import MediaType from '../../enums/MediaType';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 
@@ -46,6 +49,9 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
     const { message } = App.useApp();
     const [imageLoaded, setImageLoaded] = useState(false);
+    const [imageErrored, setImageErrored] = useState(false);
+    // ✅ 新增：缩略图 src，优先本地文件，其次网络图
+    const [imgSrc, setImgSrc] = useState('');
 
     // ✅ 优化：useShallow + 清理未使用的字段
     const {
@@ -61,6 +67,45 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         redownloadTask: s.redownloadTask,
       })),
     );
+
+    // ✅ 新增：已完成 + 图片类型 + 有本地路径 → 用本地文件；否则回退网络图
+    useEffect(() => {
+      let cancelled = false;
+      setImageLoaded(false);
+      setImageErrored(false);
+
+      (async () => {
+        const canUseLocalFile =
+          t.status === AriaStatus.Complete &&
+          t.media.type === MediaType.Photo &&
+          !!t.dir &&
+          !!t.fileName;
+
+        if (canUseLocalFile) {
+          try {
+            const localPath = await path.join(t.dir, t.fileName);
+            const exists = await fs.exists(localPath);
+            if (exists && !cancelled) {
+              setImgSrc(convertFileSrc(localPath));
+              return;
+            }
+          } catch (e) {
+            // 读取本地路径失败，回退到网络图
+          }
+        }
+
+        // 回退：网络缩略图
+        if (!cancelled) {
+          setImgSrc(
+            t.media.url ? `${t.media.url}?format=jpg&name=thumb` : '',
+          );
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [t.status, t.dir, t.fileName, t.media.url, t.media.type]);
 
     const actionRedownload: TaskAction = {
       name: '重新下载',
@@ -148,8 +193,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
-    const imgSrc = `${t.media.url}?format=jpg&name=thumb`;
-
     return (
       <div
         role="listitem"
@@ -162,9 +205,14 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             height: itemClientHeight,
           }}
         >
-          {!imageLoaded && (
+          {!imageLoaded && !imageErrored && (
             <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
               加载中...
+            </div>
+          )}
+          {imageErrored && (
+            <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
+              预览不可用
             </div>
           )}
           <a
@@ -178,16 +226,21 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             className="block w-full h-full"
             title="打开推文页"
           >
-            <img
-              src={imgSrc}
-              loading="lazy"
-              className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
-                imageLoaded ? 'block' : 'hidden'
-              }`}
-              onLoad={() => setImageLoaded(true)}
-              onError={() => setImageLoaded(true)}
-              alt="缩略图"
-            />
+            {imgSrc && (
+              <img
+                src={imgSrc}
+                loading="lazy"
+                className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
+                  imageLoaded ? 'block' : 'hidden'
+                }`}
+                onLoad={() => setImageLoaded(true)}
+                onError={() => {
+                  setImageErrored(true);
+                  setImageLoaded(true);
+                }}
+                alt="缩略图"
+              />
+            )}
           </a>
         </div>
 
@@ -204,7 +257,9 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
                 ? buildUserUrl(t.post.user?.screenName)
                 : 'javascript:void(0);'
             }
-            title={`跳转到 ${t.post.user?.name || t.post.user?.screenName || '未知用户'} 的主页`}
+            title={`跳转到 ${
+              t.post.user?.name || t.post.user?.screenName || '未知用户'
+            } 的主页`}
             target="_blank"
             rel="noreferrer"
             className="text-xs flex items-center space-x-1 w-fit text-ant-color-text-secondary bg-gray-100 p-1 rounded-full pr-2 overflow-hidden"
