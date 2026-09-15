@@ -19,6 +19,7 @@ import { buildPostUrl, buildUserUrl } from '../../twitter/url';
 import { showInFolder } from '../../utils/shell';
 import { AriaStatus } from '../../utils/aria2';
 import MediaType from '../../enums/MediaType';
+import { delay } from '../../utils';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 
@@ -102,6 +103,10 @@ function clearThumbCache(gid: string) {
   thumbInflight.delete(gid);
 }
 
+// ✅ 新增：视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成，
+//    因此文件不存在时按下面的时间间隔重试（总计约 32 秒）
+const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
+
 // ============ 缩略图类型 ============
 type ThumbKind = 'local' | 'net' | 'none';
 
@@ -142,7 +147,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         t.media.type === MediaType.Video ||
         t.media.type === MediaType.Gif;
 
-      // 未完成的任务：直接走网络封面图
       const canUseLocal =
         t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
 
@@ -154,7 +158,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 检查缓存
+      // 命中缓存直接使用
       if (thumbCache.has(t.gid)) {
         const cached = thumbCache.get(t.gid);
         if (cached) {
@@ -169,19 +173,27 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
+      // 先用网络封面图占位
       setImgSrc(netUrl);
       setThumbKind(netUrl ? 'net' : 'none');
 
       (async () => {
         try {
-          // ✅ 关键：本地缩略图路径
-          //    - Photo: 就是下载下来的原图
-          //    - Video/Gif: 是 mp4 同目录下的 "<原文件名>.thumb.jpg"
           const localThumbPath = isVideoLike
             ? await path.join(t.dir, `${t.fileName}.thumb.jpg`)
             : await path.join(t.dir, t.fileName);
 
-          const exists = await fs.exists(localThumbPath);
+          // ✅ 关键修复：先检查一次，如果没有且是视频/GIF，按计划重试
+          let exists = await fs.exists(localThumbPath);
+          if (!exists && isVideoLike) {
+            for (const wait of THUMB_RETRY_DELAYS_MS) {
+              if (cancelled) return;
+              await delay(wait);
+              exists = await fs.exists(localThumbPath);
+              if (exists) break;
+            }
+          }
+
           if (cancelled || !exists) return;
 
           const dataUrl = await loadThumbnail(t.gid, localThumbPath);
