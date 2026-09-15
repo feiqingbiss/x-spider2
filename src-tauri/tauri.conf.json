@@ -10,6 +10,7 @@
     "version": "../package.json"
   },
   "tauri": {
+    "devtools": true,
     "allowlist": {
       "all": false,
       "app": {
@@ -87,8 +88,7 @@
         "height": 920,
         "minWidth": 800,
         "minHeight": 600,
-        "decorations": true,
-        "devtools": true
+        "decorations": true
       }
     ]
   }
