@@ -3,7 +3,11 @@ import React from 'react';
 import { PageHeader } from '../components/PageHeader';
 import { Section } from '../components/settings/Section';
 import { Item } from '../components/settings/Item';
-import { DownloadOutlined, GlobalOutlined, BugOutlined } from '@ant-design/icons';
+import {
+  DownloadOutlined,
+  GlobalOutlined,
+  BugOutlined,
+} from '@ant-design/icons';
 import Joi from 'joi';
 import { SavePathSelector } from '../components/settings/SavePathSelector';
 import { Button, Input, Switch, Space, App } from 'antd';
@@ -11,6 +15,7 @@ import { FileNameTemplateInput } from '../components/settings/FileNameTemplateIn
 import { showInFolder } from '../utils/shell';
 import { path, fs, shell } from '@tauri-apps/api';
 import { useDownloadStore } from '../stores/download';
+import { formatVersion } from '../utils/version';
 
 export const Settings: React.FC = () => {
   const { message } = App.useApp();
@@ -55,7 +60,7 @@ export const Settings: React.FC = () => {
       const report = [
         `=== X-Spider 调试报告 ===`,
         `生成时间: ${new Date().toISOString()}`,
-        `版本: ${PACKAGE_JSON_VERSION}`,
+        `版本: ${formatVersion(PACKAGE_JSON_VERSION)}`,
         `操作系统: ${navigator.platform}`,
         ``,
         `--- 下载任务统计 ---`,
@@ -94,7 +99,6 @@ export const Settings: React.FC = () => {
         titleIcon={<DownloadOutlined />}
       >
         <Item
-          // ✅ 修复：加 .required()，让空值提示走我们自定义的文案
           validator={(v) =>
             Joi.string()
               .required()

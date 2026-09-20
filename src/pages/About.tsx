@@ -4,7 +4,7 @@ import { PageHeader } from '../components/PageHeader';
 import Logo from '../../src-tauri/icons/128x128.png';
 import { useCheckUpdate } from '../hooks/useCheckUpdate';
 import { useAppStateStore } from '../stores/app-state';
-import { isVersionGt } from '../utils/version';
+import { isVersionGt, formatVersion } from '../utils/version';
 import { dialog } from '@tauri-apps/api';
 
 export const About: React.FC = () => {
@@ -25,7 +25,7 @@ export const About: React.FC = () => {
       <ul className="space-y-2 [&_a]:underline">
         <li>
           <strong>版本号：</strong>
-          <span>{PACKAGE_JSON_VERSION}</span>
+          <span>{formatVersion(PACKAGE_JSON_VERSION)}</span>
           {isVersionGt(latestVersion, PACKAGE_JSON_VERSION) && (
             <span>
               &nbsp;→&nbsp;
@@ -36,7 +36,7 @@ export const About: React.FC = () => {
                 rel="noreferrer"
                 title="前往下载"
               >
-                {latestVersion}
+                {formatVersion(latestVersion)}
               </a>
             </span>
           )}
@@ -52,7 +52,7 @@ export const About: React.FC = () => {
                   });
                 }
               } catch (err) {
-                log.error(err);
+                window.log.error(err);
                 dialog.message('无法获取最新更新，请稍后再试', {
                   title: '获取更新错误',
                 });
