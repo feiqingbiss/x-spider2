@@ -2,7 +2,7 @@ import { fs, path } from '@tauri-apps/api';
 import * as R from 'ramda';
 import dayjs from 'dayjs';
 import { notification as antNotification } from 'antd';
-import { CreationTask } from '../../interfaces/CreationTask';
+import { CreationPhase, CreationTask } from '../../interfaces/CreationTask';
 import { TwitterUser } from '../../interfaces/TwitterUser';
 import { getUserMedias, getUserTweets } from '../../twitter/api';
 import { useSettingsStore } from '../settings';
@@ -21,18 +21,10 @@ const PRE_CHECK_COUNT = 20;
 const LOW_EXIST_RATIO_THRESHOLD = 0.15;
 const ENABLE_DUAL_SOURCE_SCAN = true;
 
-// ✅ 新增：不活跃阈值。预检时拉取的前 20 条帖文里，
-// 最新一条早于 (now - 180 天) 就算"不活跃"
 const INACTIVE_THRESHOLD_DAYS = 180;
 
-// ✅ 新增：模块级 Set，收集被预检判定为不活跃的用户名。
-// 前端通过 drainInactiveUsers() 取出，写完 failed_users.txt 后清空。
 const inactiveUsers = new Set<string>();
 
-/**
- * 取出并清空"不活跃用户"集合。
- * 前端在批量下载结束后调用，把结果合并到 failed_users.txt。
- */
 export function drainInactiveUsers(): string[] {
   const list = Array.from(inactiveUsers);
   inactiveUsers.clear();
@@ -155,6 +147,11 @@ interface MediaInfo {
   media: any;
   dir: string;
   fileName: string;
+}
+
+interface IndexPageInfo {
+  source: 'medias' | 'tweets';
+  totalPosts: number;
 }
 
 // ===================== 批量分析已下载 =====================
@@ -330,6 +327,7 @@ async function indexBySource(
   seenMediaIds: Set<string>,
   initialPosts: any[] = [],
   initialCursor: string | null | undefined = undefined,
+  onPage?: (info: IndexPageInfo) => void,
 ): Promise<IndexResult> {
   const getListFn = source === 'medias' ? getUserMedias : getUserTweets;
   const since = filter.dateRange?.[0] || dayjs.unix(0);
@@ -337,6 +335,7 @@ async function indexBySource(
 
   const tasks: CreateDownloadTaskParams[] = [];
   let skipCount = 0;
+  let totalProcessed = 0;
 
   const processPosts = async (posts: any[]): Promise<void> => {
     const filteredPosts = posts.filter(
@@ -421,6 +420,8 @@ async function indexBySource(
 
   if (initialPosts.length > 0) {
     await processPosts(initialPosts);
+    totalProcessed += initialPosts.length;
+    onPage?.({ source, totalPosts: totalProcessed });
   }
 
   let cursor: string | null | undefined = initialCursor;
@@ -460,6 +461,8 @@ async function indexBySource(
     const posts = resp.twitterPosts;
     if (posts.length > 0) {
       await processPosts(posts);
+      totalProcessed += posts.length;
+      onPage?.({ source, totalPosts: totalProcessed });
       const last = R.last(posts)?.createdAt;
       if (last) currentTime = last;
     }
@@ -474,16 +477,10 @@ async function indexBySource(
 }
 
 // ===================== 不活跃检测 =====================
-/**
- * ✅ 新增：复用预检已经拉取到的前 20 条帖文，判断用户是否超过
- * INACTIVE_THRESHOLD_DAYS 天未发帖。无论结果如何，都不影响下载流程，
- * 只是往 inactiveUsers 里加一个标记，供前端稍后 drain。
- */
 function checkAndMarkInactive(
   user: TwitterUser,
   preCheckResult: PreCheckResult,
 ): void {
-  // 预检失败时不判断，避免网络问题误标
   if (!preCheckResult.success) return;
 
   const posts = preCheckResult.cache?.posts ?? [];
@@ -512,6 +509,19 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
+  // ✅ 新增：阶段上报辅助函数（读 store 里最新的 task，避免覆盖其它字段）
+  const setPhase = (
+    phase: CreationPhase,
+    phaseDetail?: string,
+    indexedPosts?: number,
+  ) => {
+    const store = useDownloadStore.getState();
+    const cur = store.creationTasks.find((t) => t.id === taskId);
+    if (!cur) return;
+    store.updateCreationTask({ ...cur, phase, phaseDetail, indexedPosts });
+  };
+
+  setPhase('precheck', '预检 · 拉取前 20 条', 0);
   const preCheckResult = await preCheckWithMedias(user, filter);
 
   if (!preCheckResult.success) {
@@ -519,7 +529,6 @@ export async function runCreationTask(
     return;
   }
 
-  // ✅ 新增：复用预检数据判断活跃度。不影响下载，只是打个标记
   checkAndMarkInactive(user, preCheckResult);
 
   if (preCheckResult.totalMediaCount === 0) {
@@ -537,6 +546,8 @@ export async function runCreationTask(
   const doFullScan = async (reason: string) => {
     logFn('info', `用户 ${user.screenName} ${reason}，开始全量索引`);
 
+    // ✅ 媒体源索引
+    setPhase('index', '媒体索引 · 已 0 条', 0);
     const mediaIndex = await indexBySource(
       user,
       'medias',
@@ -545,11 +556,15 @@ export async function runCreationTask(
       seenMediaIds,
       preCheckResult.cache?.posts || [],
       preCheckResult.cache?.cursor ?? undefined,
+      (info) =>
+        setPhase('index', `媒体索引 · 已 ${info.totalPosts} 条`, info.totalPosts),
     );
     allTasks.push(...mediaIndex.tasks);
     totalSkip += mediaIndex.skipCount;
 
     if (ENABLE_DUAL_SOURCE_SCAN) {
+      // ✅ 帖子源索引
+      setPhase('tweets', '帖子索引 · 已 0 条', 0);
       logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
       const tweetsIndex = await indexBySource(
         user,
@@ -557,6 +572,14 @@ export async function runCreationTask(
         filter,
         abortSignal,
         seenMediaIds,
+        [],
+        undefined,
+        (info) =>
+          setPhase(
+            'tweets',
+            `帖子索引 · 已 ${info.totalPosts} 条`,
+            info.totalPosts,
+          ),
       );
       allTasks.push(...tweetsIndex.tasks);
       totalSkip += tweetsIndex.skipCount;
@@ -583,6 +606,7 @@ export async function runCreationTask(
   }
 
   if (allTasks.length) {
+    setPhase('creating', `准备创建 ${allTasks.length} 个下载任务`);
     perf.mark(`batchCreate-${taskId}-start`);
     await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
     perf.measure(
@@ -592,13 +616,19 @@ export async function runCreationTask(
     );
   }
 
-  useDownloadStore.getState().updateCreationTask({
-    ...task,
-    completeCount: allTasks.length,
-    skipCount: totalSkip,
-  });
+  // ✅ 写最终结果（用 store 里最新的 task，避免覆盖上面刚设置过的字段）
+  const cur = useDownloadStore
+    .getState()
+    .creationTasks.find((t) => t.id === taskId);
+  if (cur) {
+    useDownloadStore.getState().updateCreationTask({
+      ...cur,
+      completeCount: allTasks.length,
+      skipCount: totalSkip,
+      phase: 'done',
+    });
+  }
 
-  // 只写日志，不弹窗（批量下载时会有汇总）
   logFn(
     'info',
     `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
@@ -643,7 +673,6 @@ export async function scheduleCreationTasks(): Promise<void> {
   } catch (err: any) {
     const errMsg = typeof err?.message === 'string' ? err.message : String(err);
     logFn('error', `任务最终失败: ${errMsg}`);
-    // 任务失败只写日志，不弹窗（避免批量时炸屏）
   } finally {
     state.removeCreationTask(nextTask.id);
   }
