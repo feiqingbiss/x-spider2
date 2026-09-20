@@ -2,7 +2,13 @@
 import { dialog } from '@tauri-apps/api';
 import { Button } from 'antd';
 import * as R from 'ramda';
-import React, { useCallback, useMemo, useRef, useState, useDeferredValue } from 'react';
+import React, {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useDeferredValue,
+} from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { FixedSizeList } from 'react-window';
 import { DownloadTask } from '../../interfaces/DownloadTask';
@@ -20,13 +26,33 @@ export interface DownloadListProps {
 const ITEM_CLIENT_HEIGHT = 144;
 const ITEM_GAP = 16;
 
+// ✅ 新增：比较两个任务数组内容是否等价（按 gid + 关键字段）
+function tasksEqual(a: DownloadTask[], b: DownloadTask[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.gid !== y.gid ||
+      x.status !== y.status ||
+      x.completeSize !== y.completeSize ||
+      x.totalSize !== y.totalSize ||
+      x.error !== y.error ||
+      x.updatedAt !== y.updatedAt
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export const DownloadList: React.FC<DownloadListProps> = ({
   filter,
   sort,
   onInScreenTasksChanged,
   batchActions,
 }) => {
-  // ✅ 优化：useShallow
   const {
     downloadTasks,
     pauseAllDownloadTask,
@@ -45,6 +71,9 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   const [listHeight, setListHeight] = useState(600);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // ✅ 新增：缓存上一帧的 tasks，内容一样就复用旧引用
+  const lastTasksRef = useRef<DownloadTask[]>([]);
+
   const updateListHeight = useCallback(() => {
     if (!listRef.current) return;
     setListHeight(listRef.current?.clientHeight);
@@ -56,7 +85,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
 
   useEventListener('resize', updateListHeight);
 
-  // ✅ 优化：用普通函数代替 R.pipe 泛型体操，可读性更好
   const filterTasks = useCallback(
     (tasks: DownloadTask[]) => {
       const filtered = R.filter(filter, tasks);
@@ -66,7 +94,13 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   );
 
   const tasks = useMemo(() => {
-    return filterTasks(downloadTasks);
+    const next = filterTasks(downloadTasks);
+    // ✅ 如果内容和上一帧完全一样，复用旧引用
+    if (tasksEqual(lastTasksRef.current, next)) {
+      return lastTasksRef.current;
+    }
+    lastTasksRef.current = next;
+    return next;
   }, [downloadTasks, filterTasks]);
 
   const deferredTasks = useDeferredValue(tasks);
@@ -153,10 +187,10 @@ export const DownloadList: React.FC<DownloadListProps> = ({
           width={'100%'}
           itemData={deferredTasks}
           itemKey={(index, data) => data[index].gid}
-          overscanCount={5}
+          overscanCount={3}
           onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
             onInScreenTasksChanged?.(
-              deferredTasks.slice(visibleStartIndex, visibleStopIndex),
+              deferredTasks.slice(visibleStartIndex, visibleStopIndex + 1),
             );
           }}
         >

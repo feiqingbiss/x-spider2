@@ -18,7 +18,17 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   setCurrentTab: (tab) => set({ currentTab: tab }),
 
   autoSyncTaskIds: [],
-  setAutoSyncTaskIds: (ids) => set({ autoSyncTaskIds: ids }),
+  // ✅ 修复：ids 内容不变时不触发 set，避免 onItemsRendered 每帧都重渲染
+  setAutoSyncTaskIds: (ids) => {
+    const old = get().autoSyncTaskIds;
+    if (
+      old.length === ids.length &&
+      old.every((v, i) => v === ids[i])
+    ) {
+      return;
+    }
+    set({ autoSyncTaskIds: ids });
+  },
 
   downloadTasks: [],
   createDownloadTask: async (params) => {
@@ -31,7 +41,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     });
     task.gid = gid;
 
-    // ✅ 新增：顺便在后台下载封面图（不追踪状态、不进 store）
     if (thumbTask) {
       aria2
         .invoke('aria2.addUri', [thumbTask.url], {
@@ -54,18 +63,42 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const oldTasks = get().downloadTasks;
     const idx = oldTasks.findIndex((t) => t.gid === task.gid);
     if (idx === -1 || oldTasks[idx].updatedAt > now) return;
+    // ✅ 修复：如果新旧内容完全等价，不触发 set
+    const old = oldTasks[idx];
+    if (
+      old.status === task.status &&
+      old.completeSize === task.completeSize &&
+      old.totalSize === task.totalSize &&
+      old.error === task.error &&
+      old.updatedAt === task.updatedAt
+    ) {
+      return;
+    }
     set({ downloadTasks: R.adjust(idx, R.always(task))(oldTasks) });
   },
+  // ✅ 修复：无实际变化时不 set，避免频繁重渲染
   batchUpdateDownloadTasks: (tasks) => {
     const { downloadTasks: old } = get();
     const map = R.fromPairs(
       tasks.map((t) => [t.gid, t] as [string, DownloadTask]),
     );
-    set({
-      downloadTasks: old.map((o) =>
-        map[o.gid]?.updatedAt >= o.updatedAt ? map[o.gid] : o,
-      ),
+    let changed = false;
+    const next = old.map((o) => {
+      const n = map[o.gid];
+      if (!n || n === o) return o;
+      // 仅当内容真有变化（updatedAt 推进）才认为变了
+      if (
+        n.status !== o.status ||
+        n.completeSize !== o.completeSize ||
+        n.totalSize !== o.totalSize ||
+        n.error !== o.error
+      ) {
+        changed = true;
+        return n;
+      }
+      return o;
     });
+    if (changed) set({ downloadTasks: next });
   },
   batchCreateDownloadTask: async (paramsList) => {
     const tasks: DownloadTask[] = [];
@@ -97,7 +130,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       t.status = statusMap[t.gid].status;
     });
 
-    // ✅ 新增：批量发送封面图下载任务（不追踪状态）
     if (thumbTasks.length) {
       aria2
         .batchInvoke(
@@ -240,7 +272,16 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     set({
       creationTasks: [
         ...get().creationTasks,
-        { id, user, filter, status: 'waiting', completeCount: 0, skipCount: 0 },
+        {
+          id,
+          user,
+          filter,
+          status: 'waiting',
+          completeCount: 0,
+          skipCount: 0,
+          phase: 'waiting',
+          indexedPosts: 0,
+        },
       ],
     });
     logFn('info', `任务已入队: ${user.screenName}`);

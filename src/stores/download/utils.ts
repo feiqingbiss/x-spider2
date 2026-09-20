@@ -143,15 +143,18 @@ export async function mergeAriaStatusToDownloadTask(
   oldTask: DownloadTask,
   now = Date.now(),
 ): Promise<DownloadTask> {
+  // ✅ 修复：不再从 aria2 覆盖 `dir` 和 `fileName`。
+  //    原因：aria2 返回的路径可能与前端生成的字符串有细微差异
+  //    （斜杠方向、URL 编码等），导致 `DownloadListItem` 的 useEffect
+  //    依赖被误判为变化，图片被反复重置、UI 频闪。
+  //    我们自己的 `dir` / `fileName` 才是权威值，保持不变。
   return {
     ...oldTask,
     gid: ariaStatus.gid,
     status: ariaStatus.status,
     completeSize: Number(ariaStatus.completedLength),
     totalSize: Number(ariaStatus.totalLength),
-    fileName: await path.basename(ariaStatus.files[0].path),
     error: ariaStatus.errorMessage,
-    dir: ariaStatus.dir,
     updatedAt: now,
   };
 }
@@ -201,9 +204,6 @@ export async function prepareDownloadTask({
     ariaRetryCountRemains: 5,
   };
 
-  // ✅ 新增：视频 / GIF 额外附带封面图下载任务
-  //    - 保存路径：同目录同文件名 + ".thumb.jpg"
-  //    - 用途：离线时也能在"已完成"列表显示封面
   let thumbTask: ThumbTaskInfo | undefined;
   const isVideoLike =
     media.type === MediaType.Video || media.type === MediaType.Gif;
