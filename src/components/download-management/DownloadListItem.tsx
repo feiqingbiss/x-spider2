@@ -103,8 +103,8 @@ function clearThumbCache(gid: string) {
   thumbInflight.delete(gid);
 }
 
-// ✅ 新增：视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成，
-//    因此文件不存在时按下面的时间间隔重试（总计约 32 秒）
+// 视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成，
+// 因此文件不存在时按下面的时间间隔重试（总计约 32 秒）
 const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
 
 // ============ 缩略图类型 ============
@@ -150,15 +150,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       const canUseLocal =
         t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
 
-      if (!canUseLocal) {
-        setImgSrc(netUrl);
-        setThumbKind(netUrl ? 'net' : 'none');
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      // 命中缓存直接使用
+      // ============ 命中缓存 → 直接用 ============
       if (thumbCache.has(t.gid)) {
         const cached = thumbCache.get(t.gid);
         if (cached) {
@@ -173,9 +165,19 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 先用网络封面图占位
-      setImgSrc(netUrl);
-      setThumbKind(netUrl ? 'net' : 'none');
+      // ============ 未完成的任务：直接走网络占位 ============
+      if (!canUseLocal) {
+        setImgSrc(netUrl);
+        setThumbKind(netUrl ? 'net' : 'none');
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      // ============ 已完成的任务：优先走本地，不给网络机会 ============
+      // 先清空 imgSrc，显示"生成缩略图中"，避免先请求网络
+      setImgSrc('');
+      setThumbKind('none');
 
       (async () => {
         try {
@@ -183,7 +185,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             ? await path.join(t.dir, `${t.fileName}.thumb.jpg`)
             : await path.join(t.dir, t.fileName);
 
-          // ✅ 关键修复：先检查一次，如果没有且是视频/GIF，按计划重试
           let exists = await fs.exists(localThumbPath);
           if (!exists && isVideoLike) {
             for (const wait of THUMB_RETRY_DELAYS_MS) {
@@ -194,19 +195,31 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             }
           }
 
-          if (cancelled || !exists) return;
-
-          const dataUrl = await loadThumbnail(t.gid, localThumbPath);
           if (cancelled) return;
 
-          if (dataUrl) {
-            setImageLoaded(false);
-            setImageErrored(false);
-            setImgSrc(dataUrl);
-            setThumbKind('local');
+          if (exists) {
+            const dataUrl = await loadThumbnail(t.gid, localThumbPath);
+            if (cancelled) return;
+            if (dataUrl) {
+              setImageLoaded(false);
+              setImageErrored(false);
+              setImgSrc(dataUrl);
+              setThumbKind('local');
+              return;
+            }
+          }
+
+          // 本地确实没有 → 回退网络
+          if (!cancelled) {
+            setImgSrc(netUrl);
+            setThumbKind(netUrl ? 'net' : 'none');
           }
         } catch (e) {
           console.warn('[Thumb] local thumb load failed:', e);
+          if (!cancelled) {
+            setImgSrc(netUrl);
+            setThumbKind(netUrl ? 'net' : 'none');
+          }
         }
       })();
 
@@ -345,8 +358,9 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
           }}
         >
           {!imgSrc && (
-            <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
-              生成缩略图中...
+            <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
+              <span>生成缩略图中...</span>
+              <span className="text-[10px] mt-1 opacity-70">本地文件</span>
             </div>
           )}
           {imgSrc && !imageLoaded && !imageErrored && (
