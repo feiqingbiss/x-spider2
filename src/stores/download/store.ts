@@ -11,20 +11,47 @@ import {
   logFn,
 } from './utils';
 import { creationTaskAbortControllerMap } from './creation';
+import { useSettingsStore } from '../settings';
 import { perf } from './performance';
+
+// ✅ 统一构建 aria2.addUri 的 options
+// - auto-file-renaming=false：禁止生成 ".1 .2 (1) (2)" 后缀
+// - 根据"跳过相同文件"设置，决定是"允许覆盖"还是"已存在即失败"
+function buildAddUriOptions(
+  dir: string,
+  fileName: string,
+): Record<string, string> {
+  const settings = useSettingsStore.getState();
+  const skipSameFile = settings.download.sameFileSkip;
+  return {
+    dir,
+    out: fileName,
+    'auto-file-renaming': 'false',
+    'allow-overwrite': skipSameFile ? 'false' : 'true',
+    continue: 'true',
+  };
+}
+
+// ✅ 同时按 errorCode 和 errorMessage 判断"文件已存在"
+// aria2 的 "File already exists." 错误码固定是 13
+function isFileAlreadyExistsError(errMsg: string, errCode?: number | string): boolean {
+  if (errCode === 13 || errCode === '13') return true;
+  const m = (errMsg || '').toLowerCase();
+  return (
+    m.includes('already exists') ||
+    m.includes('file exists') ||
+    m.includes('cannot overwrite')
+  );
+}
 
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
   currentTab: '',
   setCurrentTab: (tab) => set({ currentTab: tab }),
 
   autoSyncTaskIds: [],
-  // ✅ 修复：ids 内容不变时不触发 set，避免 onItemsRendered 每帧都重渲染
   setAutoSyncTaskIds: (ids) => {
     const old = get().autoSyncTaskIds;
-    if (
-      old.length === ids.length &&
-      old.every((v, i) => v === ids[i])
-    ) {
+    if (old.length === ids.length && old.every((v, i) => v === ids[i])) {
       return;
     }
     set({ autoSyncTaskIds: ids });
@@ -35,18 +62,47 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     perf.mark('createDownload-start');
     const { task, thumbTask } = await prepareDownloadTask(params);
 
-    const gid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
-      dir: task.dir,
-      out: task.fileName,
-    });
+    let gid: string;
+    try {
+      gid = await aria2.invoke(
+        'aria2.addUri',
+        [task.downloadUrl],
+        buildAddUriOptions(task.dir, task.fileName),
+      );
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      // ✅ 调用点 1：addUri 阶段 reject，只能靠 message 判断
+      if (isFileAlreadyExistsError(errMsg)) {
+        logFn('info', `文件已存在，跳过：${task.fileName}`);
+        const skipTask: DownloadTask = {
+          ...task,
+          gid: `skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          status: AriaStatus.Complete,
+          completeSize: 1,
+          totalSize: 1,
+          error: '',
+          updatedAt: Date.now(),
+        };
+        set({ downloadTasks: get().downloadTasks.concat(skipTask) });
+        perf.measure(
+          'createDownload',
+          'createDownload-start',
+          'createDownload-end',
+        );
+        return;
+      }
+      throw err;
+    }
+
     task.gid = gid;
 
     if (thumbTask) {
       aria2
-        .invoke('aria2.addUri', [thumbTask.url], {
-          dir: thumbTask.dir,
-          out: thumbTask.fileName,
-        })
+        .invoke(
+          'aria2.addUri',
+          [thumbTask.url],
+          buildAddUriOptions(thumbTask.dir, thumbTask.fileName),
+        )
         .catch((e) => logFn('warn', '封面图下载任务发送失败', e));
     }
 
@@ -63,7 +119,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const oldTasks = get().downloadTasks;
     const idx = oldTasks.findIndex((t) => t.gid === task.gid);
     if (idx === -1 || oldTasks[idx].updatedAt > now) return;
-    // ✅ 修复：如果新旧内容完全等价，不触发 set
     const old = oldTasks[idx];
     if (
       old.status === task.status &&
@@ -76,7 +131,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }
     set({ downloadTasks: R.adjust(idx, R.always(task))(oldTasks) });
   },
-  // ✅ 修复：无实际变化时不 set，避免频繁重渲染
   batchUpdateDownloadTasks: (tasks) => {
     const { downloadTasks: old } = get();
     const map = R.fromPairs(
@@ -86,7 +140,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const next = old.map((o) => {
       const n = map[o.gid];
       if (!n || n === o) return o;
-      // 仅当内容真有变化（updatedAt 推进）才认为变了
       if (
         n.status !== o.status ||
         n.completeSize !== o.completeSize ||
@@ -116,32 +169,64 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }
     if (!tasks.length) return;
 
-    const gids = (
-      await aria2.batchInvoke(
-        tasks.map((t) => ({
-          methodName: 'aria2.addUri',
-          params: [[t.downloadUrl], { dir: t.dir, out: t.fileName }],
-        })),
-      )
-    ).flat();
-    const statusMap = await aria2.tellStatus(gids);
-    tasks.forEach((t, i) => {
-      t.gid = gids[i];
-      t.status = statusMap[t.gid].status;
-    });
+    // 逐个发送，识别"已存在"的情况
+    const goodTasks: DownloadTask[] = [];
+    const skipTasks: DownloadTask[] = [];
 
-    if (thumbTasks.length) {
-      aria2
-        .batchInvoke(
-          thumbTasks.map((t) => ({
-            methodName: 'aria2.addUri',
-            params: [[t.url], { dir: t.dir, out: t.fileName }],
-          })),
-        )
-        .catch((e) => logFn('warn', '封面图批量下载任务发送失败', e));
+    for (const t of tasks) {
+      try {
+        const gid = await aria2.invoke(
+          'aria2.addUri',
+          [t.downloadUrl],
+          buildAddUriOptions(t.dir, t.fileName),
+        );
+        t.gid = gid;
+        goodTasks.push(t);
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        // ✅ 调用点 2：批量里 addUri 阶段 reject，只能靠 message
+        if (isFileAlreadyExistsError(errMsg)) {
+          logFn('info', `文件已存在，跳过：${t.fileName}`);
+          t.gid = `skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          t.status = AriaStatus.Complete;
+          t.completeSize = 1;
+          t.totalSize = 1;
+          t.error = '';
+          t.updatedAt = Date.now();
+          skipTasks.push(t);
+        } else {
+          logFn('error', `添加下载失败: ${errMsg}`);
+        }
+      }
     }
 
-    set({ downloadTasks: get().downloadTasks.concat(tasks) });
+    if (goodTasks.length > 0) {
+      const statusMap = await aria2.tellStatus(goodTasks.map((t) => t.gid));
+      goodTasks.forEach((t) => {
+        t.status = statusMap[t.gid].status;
+      });
+    }
+
+    if (thumbTasks.length) {
+      for (const tt of thumbTasks) {
+        aria2
+          .invoke(
+            'aria2.addUri',
+            [tt.url],
+            buildAddUriOptions(tt.dir, tt.fileName),
+          )
+          .catch((e) => {
+            const msg = e?.message || String(e);
+            if (!isFileAlreadyExistsError(msg)) {
+              logFn('warn', `封面图下载任务发送失败: ${msg}`);
+            }
+          });
+      }
+    }
+
+    set({
+      downloadTasks: get().downloadTasks.concat(goodTasks).concat(skipTasks),
+    });
   },
   pauseDownloadTask: async (gid) => {
     await aria2.invoke('aria2.pause', gid);
@@ -156,9 +241,12 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     await aria2.invoke('aria2.unpauseAll');
   },
   removeDownloadTask: async (gid) => {
-    aria2
-      .invoke('aria2.remove', gid)
-      .catch((e) => logFn('warn', 'remove fail', e));
+    // skip- 开头的假 gid 不在 aria2 里，跳过远程调用
+    if (!gid.startsWith('skip-')) {
+      aria2
+        .invoke('aria2.remove', gid)
+        .catch((e) => logFn('warn', 'remove fail', e));
+    }
     const s = get();
     set({
       downloadTasks: s.downloadTasks.filter((v) => v.gid !== gid),
@@ -166,11 +254,14 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     });
   },
   batchRemoveDownloadTasks: async (gids) => {
-    aria2
-      .batchInvoke(
-        gids.map((g) => ({ methodName: 'aria2.remove', params: [g] })),
-      )
-      .catch((e) => logFn('error', gids, e));
+    const realGids = gids.filter((g) => !g.startsWith('skip-'));
+    if (realGids.length > 0) {
+      aria2
+        .batchInvoke(
+          realGids.map((g) => ({ methodName: 'aria2.remove', params: [g] })),
+        )
+        .catch((e) => logFn('error', realGids, e));
+    }
     set({
       downloadTasks: get().downloadTasks.filter((v) => !gids.includes(v.gid)),
     });
@@ -192,6 +283,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     );
   },
   syncDownloadTaskStatus: async (gid) => {
+    // skip- 开头的假 gid 不需要同步
+    if (gid.startsWith('skip-')) return;
+
     const { downloadTasks, updateDownloadTask, removeDownloadTask } = get();
     const task = downloadTasks.find((v) => v.gid === gid);
     if (!task) return;
@@ -199,6 +293,24 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const status = await aria2.tellStatus(gid);
 
     if (status.status === 'error') {
+      const errMsg = status.errorMessage || '';
+      // ✅ 调用点 3：有 errorCode 可用，最可靠
+      if (isFileAlreadyExistsError(errMsg, status.errorCode)) {
+        logFn('info', `文件已存在，跳过：${task.fileName}`);
+        updateDownloadTask(
+          {
+            ...task,
+            status: AriaStatus.Complete,
+            completeSize: 1,
+            totalSize: 1,
+            error: '',
+            updatedAt: now,
+          },
+          now,
+        );
+        return;
+      }
+
       if (task.ariaRetryCountRemains > 0) {
         logFn(
           'warn',
@@ -206,15 +318,32 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         );
         let newGid: string;
         try {
-          newGid = await aria2.invoke('aria2.addUri', [task.downloadUrl], {
-            dir: task.dir,
-            out: task.fileName,
-          });
+          newGid = await aria2.invoke(
+            'aria2.addUri',
+            [task.downloadUrl],
+            buildAddUriOptions(task.dir, task.fileName),
+          );
         } catch (err: any) {
-          logFn('error', `重试添加下载失败: ${err.message}`);
+          const retryMsg = err?.message || String(err);
+          if (isFileAlreadyExistsError(retryMsg)) {
+            logFn('info', `重试时文件已存在，跳过：${task.fileName}`);
+            updateDownloadTask(
+              {
+                ...task,
+                status: AriaStatus.Complete,
+                completeSize: 1,
+                totalSize: 1,
+                error: '',
+                updatedAt: now,
+              },
+              now,
+            );
+            return;
+          }
+          logFn('error', `重试添加下载失败: ${retryMsg}`);
           const merged = await mergeAriaStatusToDownloadTask(status, task);
           updateDownloadTask(
-            { ...merged, error: `重试失败: ${err.message}` },
+            { ...merged, error: `重试失败: ${retryMsg}` },
             now,
           );
           return;
@@ -313,7 +442,10 @@ async function doAutoSync() {
   if (!ids.length) return;
   try {
     const now = Date.now();
-    const resultMap = await aria2.tellStatus(ids);
+    // 过滤掉 skip- 假 gid
+    const realIds = ids.filter((g) => !g.startsWith('skip-'));
+    if (!realIds.length) return;
+    const resultMap = await aria2.tellStatus(realIds);
     const { downloadTasks, batchUpdateDownloadTasks } =
       useDownloadStore.getState();
     const updated = await Promise.all(
