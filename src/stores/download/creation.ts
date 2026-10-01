@@ -31,6 +31,28 @@ export function drainInactiveUsers(): string[] {
   return list;
 }
 
+// ✅ 新增：判断磁盘上是否已有该文件，同时接受 aria2 自动重命名生成的副本
+//   - 精确匹配 "xxx.jpg"
+//   - 接受 aria2 后缀 "xxx (1).jpg" ~ "xxx (99).jpg"
+//   - 兼容点号形式 "xxx.1.jpg" ~ "xxx.99.jpg"
+function fileExistsWithSuffix(
+  files: Set<string>,
+  baseName: string,
+): boolean {
+  if (files.has(baseName)) return true;
+
+  const dotIdx = baseName.lastIndexOf('.');
+  const stem = dotIdx >= 0 ? baseName.slice(0, dotIdx) : baseName;
+  const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
+
+  // 上限 99，再多就不正常了
+  for (let i = 1; i <= 99; i++) {
+    if (files.has(`${stem} (${i})${ext}`)) return true;
+    if (files.has(`${stem}.${i}${ext}`)) return true;
+  }
+  return false;
+}
+
 // ===================== API 限流器（全局） =====================
 const MIN_API_INTERVAL_MS = 7000;
 const MAX_JITTER_MS = 3000;
@@ -236,7 +258,8 @@ async function analyzePosts(
   for (const info of mediaInfos) {
     totalMediaCount++;
     const files = dirToFiles.get(info.dir);
-    if (files && files.has(info.fileName)) {
+    // ✅ 修复：使用 fileExistsWithSuffix 识别 aria2 重命名副本
+    if (files && fileExistsWithSuffix(files, info.fileName)) {
       existCount++;
     } else {
       missingTasks.push({ media: info.media, post: info.post });
@@ -406,10 +429,11 @@ async function indexBySource(
 
     for (const info of mediaInfos) {
       const files = dirToFiles.get(info.dir);
+      // ✅ 修复：使用 fileExistsWithSuffix 识别 aria2 重命名副本
       if (
         settings.download.sameFileSkip &&
         files &&
-        files.has(info.fileName)
+        fileExistsWithSuffix(files, info.fileName)
       ) {
         skipCount++;
         continue;
@@ -509,7 +533,6 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  // ✅ 新增：阶段上报辅助函数（读 store 里最新的 task，避免覆盖其它字段）
   const setPhase = (
     phase: CreationPhase,
     phaseDetail?: string,
@@ -546,7 +569,6 @@ export async function runCreationTask(
   const doFullScan = async (reason: string) => {
     logFn('info', `用户 ${user.screenName} ${reason}，开始全量索引`);
 
-    // ✅ 媒体源索引
     setPhase('index', '媒体索引 · 已 0 条', 0);
     const mediaIndex = await indexBySource(
       user,
@@ -563,7 +585,6 @@ export async function runCreationTask(
     totalSkip += mediaIndex.skipCount;
 
     if (ENABLE_DUAL_SOURCE_SCAN) {
-      // ✅ 帖子源索引
       setPhase('tweets', '帖子索引 · 已 0 条', 0);
       logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
       const tweetsIndex = await indexBySource(
@@ -616,7 +637,6 @@ export async function runCreationTask(
     );
   }
 
-  // ✅ 写最终结果（用 store 里最新的 task，避免覆盖上面刚设置过的字段）
   const cur = useDownloadStore
     .getState()
     .creationTasks.find((t) => t.id === taskId);
