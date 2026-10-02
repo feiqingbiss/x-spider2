@@ -69,6 +69,18 @@ jobs:
         id: bumpVersion
         run: 'pnpm version prerelease -m "chore: Auto release %s"'
 
+      - name: Debug - Show Cargo.toml and Commit
+        shell: pwsh
+        run: |
+          Write-Host "=== Current commit ==="
+          git log -1 --format="%H %s"
+          Write-Host "=== Current branch ==="
+          git rev-parse --abbrev-ref HEAD
+          Write-Host "=== Cargo.toml content ==="
+          Get-Content src-tauri\Cargo.toml
+          Write-Host "=== Searching for system-tray ==="
+          Select-String -Path src-tauri\Cargo.toml -Pattern "system-tray"
+
       - name: Build Tauri app
         run: pnpm tauri build
 
