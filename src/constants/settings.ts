@@ -17,8 +17,6 @@ export const DEFAULT_SETTINGS: Settings = {
     autoCheckUpdate: true,
     acceptPrerelease: false,
     writeLogs: true,
-    // ✅ 默认开启"关闭到托盘"
-    minimizeToTrayOnClose: true,
   },
 };
 

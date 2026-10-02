@@ -31,8 +31,6 @@ export interface Settings_V2 {
     autoCheckUpdate: boolean;
     acceptPrerelease: boolean;
     writeLogs: boolean;
-    // ✅ 新增：关闭窗口时隐藏到托盘
-    minimizeToTrayOnClose: boolean;
   };
 }
 

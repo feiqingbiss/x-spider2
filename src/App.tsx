@@ -8,7 +8,6 @@ import { SideBar } from './components/SideBar';
 import { ANTD_THEME } from './constants/antd-theme';
 import { useBootstrap } from './hooks/useBootstrap';
 import { useRunBackgroundTasks } from './hooks/useRunBackgroundTasks';
-import { useSyncCloseToTray } from './hooks/useSyncCloseToTray';
 import { useAppStateStore } from './stores/app-state';
 import { useRouteStore } from './stores/route';
 import { useSettingsStore } from './stores/settings';
@@ -26,8 +25,6 @@ const AppInternal: React.FC = () => {
   });
 
   useRunBackgroundTasks();
-  // ✅ 同步"关闭到托盘"开关到 Rust
-  useSyncCloseToTray();
 
   return (
     <div className="bg-gray-50 w-full h-full overflow-auto">
