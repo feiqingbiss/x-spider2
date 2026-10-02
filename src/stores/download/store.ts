@@ -14,9 +14,6 @@ import { creationTaskAbortControllerMap } from './creation';
 import { useSettingsStore } from '../settings';
 import { perf } from './performance';
 
-// ✅ 统一构建 aria2.addUri 的 options
-// - auto-file-renaming=false：禁止生成 ".1 .2 (1) (2)" 后缀
-// - 根据"跳过相同文件"设置，决定是"允许覆盖"还是"已存在即失败"
 function buildAddUriOptions(
   dir: string,
   fileName: string,
@@ -32,9 +29,10 @@ function buildAddUriOptions(
   };
 }
 
-// ✅ 同时按 errorCode 和 errorMessage 判断"文件已存在"
-// aria2 的 "File already exists." 错误码固定是 13
-function isFileAlreadyExistsError(errMsg: string, errCode?: number | string): boolean {
+function isFileAlreadyExistsError(
+  errMsg: string,
+  errCode?: number | string,
+): boolean {
   if (errCode === 13 || errCode === '13') return true;
   const m = (errMsg || '').toLowerCase();
   return (
@@ -71,7 +69,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       );
     } catch (err: any) {
       const errMsg = err?.message || String(err);
-      // ✅ 调用点 1：addUri 阶段 reject，只能靠 message 判断
       if (isFileAlreadyExistsError(errMsg)) {
         logFn('info', `文件已存在，跳过：${task.fileName}`);
         const skipTask: DownloadTask = {
@@ -169,7 +166,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }
     if (!tasks.length) return;
 
-    // 逐个发送，识别"已存在"的情况
     const goodTasks: DownloadTask[] = [];
     const skipTasks: DownloadTask[] = [];
 
@@ -184,7 +180,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
         goodTasks.push(t);
       } catch (err: any) {
         const errMsg = err?.message || String(err);
-        // ✅ 调用点 2：批量里 addUri 阶段 reject，只能靠 message
         if (isFileAlreadyExistsError(errMsg)) {
           logFn('info', `文件已存在，跳过：${t.fileName}`);
           t.gid = `skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -241,7 +236,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     await aria2.invoke('aria2.unpauseAll');
   },
   removeDownloadTask: async (gid) => {
-    // skip- 开头的假 gid 不在 aria2 里，跳过远程调用
     if (!gid.startsWith('skip-')) {
       aria2
         .invoke('aria2.remove', gid)
@@ -283,7 +277,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     );
   },
   syncDownloadTaskStatus: async (gid) => {
-    // skip- 开头的假 gid 不需要同步
     if (gid.startsWith('skip-')) return;
 
     const { downloadTasks, updateDownloadTask, removeDownloadTask } = get();
@@ -294,7 +287,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
 
     if (status.status === 'error') {
       const errMsg = status.errorMessage || '';
-      // ✅ 调用点 3：有 errorCode 可用，最可靠
       if (isFileAlreadyExistsError(errMsg, status.errorCode)) {
         logFn('info', `文件已存在，跳过：${task.fileName}`);
         updateDownloadTask(
@@ -434,40 +426,47 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   setBatchProgress: (p) => set({ batchProgress: p }),
 }));
 
-// ================= 自动同步（优化版） =================
+// ================= 自动同步（优化：只查询视口内任务） =================
 let syncTimerId: ReturnType<typeof setInterval> | null = null;
 
 async function doAutoSync() {
-  const ids = useDownloadStore.getState().autoSyncTaskIds;
+  const state = useDownloadStore.getState();
+  const ids = state.autoSyncTaskIds;
   if (!ids.length) return;
+  const realIds = ids.filter((g) => !g.startsWith('skip-'));
+  if (!realIds.length) return;
+
   try {
     const now = Date.now();
-    // 过滤掉 skip- 假 gid
-    const realIds = ids.filter((g) => !g.startsWith('skip-'));
-    if (!realIds.length) return;
     const resultMap = await aria2.tellStatus(realIds);
-    const { downloadTasks, batchUpdateDownloadTasks } =
-      useDownloadStore.getState();
-    const updated = await Promise.all(
-      downloadTasks.map(async (old) => {
-        if (old.updatedAt > now || !resultMap[old.gid]) return old;
-        const merged = await mergeAriaStatusToDownloadTask(
-          resultMap[old.gid],
-          old,
-          now,
-        );
-        if (
-          merged.status === old.status &&
-          merged.completeSize === old.completeSize &&
-          merged.totalSize === old.totalSize &&
-          merged.error === old.error
-        ) {
-          return old;
-        }
-        return merged;
-      }),
-    );
-    batchUpdateDownloadTasks(updated);
+
+    // ✅ 优化：只遍历 realIds 对应的任务，而不是整个 downloadTasks
+    const taskMap = new Map(state.downloadTasks.map((t) => [t.gid, t]));
+    const updated: DownloadTask[] = [];
+
+    for (const gid of realIds) {
+      const old = taskMap.get(gid);
+      if (!old) continue;
+      if (old.updatedAt > now) continue;
+
+      const raw = resultMap[gid];
+      if (!raw) continue;
+
+      const merged = await mergeAriaStatusToDownloadTask(raw, old, now);
+
+      if (
+        merged.status !== old.status ||
+        merged.completeSize !== old.completeSize ||
+        merged.totalSize !== old.totalSize ||
+        merged.error !== old.error
+      ) {
+        updated.push(merged);
+      }
+    }
+
+    if (updated.length > 0) {
+      useDownloadStore.getState().batchUpdateDownloadTasks(updated);
+    }
   } catch (e) {
     logFn('error', 'sync error', e);
   }

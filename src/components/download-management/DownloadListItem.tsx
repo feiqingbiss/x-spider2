@@ -46,8 +46,38 @@ const areEqual = (
   );
 };
 
-// ============ 缩略图缓存与并发控制 ============
-const thumbCache = new Map<string, string | null>();
+// ============ 缩略图缓存（LRU，上限 200 条） ============
+const MAX_THUMB_CACHE_SIZE = 200;
+
+class ThumbCache {
+  private map = new Map<string, string | null>();
+
+  get(gid: string): string | null | undefined {
+    if (!this.map.has(gid)) return undefined;
+    const v = this.map.get(gid)!;
+    // LRU：命中后移到末尾（Map 保持插入顺序）
+    this.map.delete(gid);
+    this.map.set(gid, v);
+    return v;
+  }
+
+  set(gid: string, value: string | null): void {
+    if (this.map.has(gid)) this.map.delete(gid);
+    this.map.set(gid, value);
+    // 超出上限：删最旧的
+    while (this.map.size > MAX_THUMB_CACHE_SIZE) {
+      const first = this.map.keys().next().value;
+      if (first === undefined) break;
+      this.map.delete(first);
+    }
+  }
+
+  delete(gid: string): void {
+    this.map.delete(gid);
+  }
+}
+
+const thumbCache = new ThumbCache();
 const thumbInflight = new Map<string, Promise<string | null>>();
 
 const MAX_CONCURRENT_THUMBS = 2;
@@ -72,8 +102,9 @@ function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 function loadThumbnail(gid: string, localPath: string): Promise<string | null> {
-  if (thumbCache.has(gid)) {
-    return Promise.resolve(thumbCache.get(gid)!);
+  const cached = thumbCache.get(gid);
+  if (cached !== undefined) {
+    return Promise.resolve(cached);
   }
   const inflight = thumbInflight.get(gid);
   if (inflight) return inflight;
@@ -103,11 +134,9 @@ function clearThumbCache(gid: string) {
   thumbInflight.delete(gid);
 }
 
-// 视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成，
-// 因此文件不存在时按下面的时间间隔重试（总计约 32 秒）
+// 视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成
 const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
 
-// ============ 缩略图类型 ============
 type ThumbKind = 'local' | 'net' | 'none';
 
 const THUMB_TIMEOUT_MS = 15000;
@@ -150,9 +179,9 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       const canUseLocal =
         t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
 
-      // ============ 命中缓存 → 直接用 ============
-      if (thumbCache.has(t.gid)) {
-        const cached = thumbCache.get(t.gid);
+      // 命中缓存 → 直接用
+      const cached = thumbCache.get(t.gid);
+      if (cached !== undefined) {
         if (cached) {
           setImgSrc(cached);
           setThumbKind('local');
@@ -165,7 +194,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // ============ 未完成的任务：直接走网络占位 ============
+      // 未完成的任务 → 直接走网络占位
       if (!canUseLocal) {
         setImgSrc(netUrl);
         setThumbKind(netUrl ? 'net' : 'none');
@@ -174,8 +203,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // ============ 已完成的任务：优先走本地，不给网络机会 ============
-      // 先清空 imgSrc，显示"生成缩略图中"，避免先请求网络
+      // 已完成 → 优先本地，不给网络机会
       setImgSrc('');
       setThumbKind('none');
 
@@ -209,7 +237,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             }
           }
 
-          // 本地确实没有 → 回退网络
+          // 本地没有 → 回退网络
           if (!cancelled) {
             setImgSrc(netUrl);
             setThumbKind(netUrl ? 'net' : 'none');

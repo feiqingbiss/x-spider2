@@ -9,7 +9,6 @@ const MAX_RETRY_COUNT = 4;
 const MAX_RETRY_DELAY = 4000;
 const RATE_LIMIT_LOG_INTERVAL = 30000;
 
-// ✅ 优化：用 getLog() 懒初始化，并加 noop 兜底，避免 window.log 未就绪时崩溃
 let netLog: ICategoriedLogger | null = null;
 let lastRateLimitLogTime = 0;
 
@@ -38,6 +37,48 @@ function isRateLimitError(msg: string): boolean {
     m.includes('rate limit') ||
     m.includes('expected value at line 1 column 1')
   );
+}
+
+// ✅ 新增：日志脱敏
+const SENSITIVE_HEADER_KEYS = new Set([
+  'cookie',
+  'set-cookie',
+  'authorization',
+  'x-csrf-token',
+  'proxy-authorization',
+]);
+
+const SENSITIVE_QUERY_KEYWORDS = ['token', 'secret', 'auth', 'password', 'key'];
+
+function sanitizeHeaders(
+  headers: Record<string, string>,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (SENSITIVE_HEADER_KEYS.has(k.toLowerCase())) {
+      out[k] = '******';
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function sanitizeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    let changed = false;
+    for (const key of Array.from(u.searchParams.keys())) {
+      const lower = key.toLowerCase();
+      if (SENSITIVE_QUERY_KEYWORDS.some((kw) => lower.includes(kw))) {
+        u.searchParams.set(key, '******');
+        changed = true;
+      }
+    }
+    return changed ? u.href : url;
+  } catch {
+    return url;
+  }
 }
 
 export async function request(options: RequestOptions) {
@@ -110,14 +151,13 @@ async function requestInternal(
   const log = getLog();
   const startTs = Date.now();
   const reqId = reqIdGlobal++;
-  log.info(`REQ_${reqId}`, method, url, {
+
+  // ✅ 日志脱敏
+  log.info(`REQ_${reqId}`, method, sanitizeUrl(url), {
     body,
     enableProxy,
     proxyUrl,
-    headers: {
-      ...headers,
-      Cookie: headers.Cookie ? '******' : undefined,
-    },
+    headers: sanitizeHeaders(headers),
     responseType,
   });
 
@@ -132,7 +172,7 @@ async function requestInternal(
   });
 
   const endTs = Date.now() - startTs;
-  log.info(`RES_${reqId}(+${endTs}ms)`, res.status, url, res);
+  log.info(`RES_${reqId}(+${endTs}ms)`, res.status, sanitizeUrl(url), res);
 
   return res;
 }
