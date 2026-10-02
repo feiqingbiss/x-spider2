@@ -716,7 +716,7 @@ export const Homepage: React.FC = () => {
       </div>
 
       {userInfo.data && (
-        <section className="relative grow overflow-auto border-t border-gray-100">
+        <section className="relative grow overflow-hidden border-t border-gray-100">
           <PostListGridView />
         </section>
       )}
