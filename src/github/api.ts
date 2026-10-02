@@ -18,19 +18,24 @@ export interface GitHubRelease {
 
 /**
  * 拉取 releases 列表。
- * - 优先返回最新 stable release
- * - 如果没有 stable（全是你自己的 prerelease），返回最新 prerelease 作为兜底
- * - pre = true 时直接返回最新一条（包含 prerelease）
+ * - pre = true：直接返回最新一条（含 prerelease）
+ * - pre = false：如果最新一条是 stable，返回它；
+ *                如果最新一条是 prerelease，也直接返回它（重要修复，见下）
  *
- * 如果 releases 列表为空，会 fallback 到 tags 接口。
+ * 关于 pre = false 的兜底逻辑：
+ *   以前用 `allReleases.find(r => !r.prerelease)` 查找 stable，
+ *   但如果仓库历史上发过一个很旧的 stable（比如 v2.5.0），
+ *   就会优先返回它，导致后续发布的 prerelease 永远检测不到。
+ *   现在改为：
+ *     1. 最新一条是 stable → 返回它
+ *     2. 最新一条是 prerelease → 忽略 acceptPrerelease 设置，直接返回它
+ *   这样“用户装的是 prerelease、也应该收到 prerelease 更新”的语义能对上。
  */
 export async function getLatestReleases(
   pre = false,
 ): Promise<GitHubRelease | null> {
   const fromReleases = await tryGetLatestFromReleases(pre);
   if (fromReleases !== undefined) return fromReleases;
-
-  // releases 列表完全为空 → 走 tags
   return await tryGetLatestFromTags();
 }
 
@@ -56,7 +61,6 @@ async function tryGetLatestFromReleases(
     });
 
     if (resp.status === 404) {
-      // 仓库不存在 / releases 接口不可用 → 交给 tags 兜底
       return undefined;
     }
     if (resp.status !== 200) {
@@ -71,7 +75,6 @@ async function tryGetLatestFromReleases(
     }
 
     if (!Array.isArray(body)) {
-      // 不是数组（可能是错误对象），交给 tags 兜底
       return undefined;
     }
 
@@ -93,26 +96,33 @@ async function tryGetLatestFromReleases(
   }
 
   if (allReleases.length === 0) {
-    // 完全没有 release，交给 tags 兜底
     return undefined;
   }
 
-  // pre = true：直接返回最新一条（含 prerelease）
-  if (pre) {
-    return allReleases[0];
+  // allReleases[0] 是最新发布的一条
+  const latest = allReleases[0];
+
+  // ✅ 关键修复 1：最新一条就是 stable → 直接返回
+  if (!latest.prerelease) {
+    return latest;
   }
 
-  // pre = false：优先返回最新 stable
-  const stable = allReleases.find((r) => !r.prerelease);
-  if (stable) return stable;
+  // ✅ 关键修复 2：最新一条是 prerelease
+  //    - pre = true → 直接返回
+  //    - pre = false → 也直接返回（不再去找可能很旧的 stable）
+  //      为什么？因为如果只找 stable，历史上某个 v2.5.0 会把后续的
+  //      v2.5.2-1、v2.5.2-2 等 prerelease 更新全部屏蔽。
+  //      用户当前装的是 prerelease 时，前端（useCheckUpdate）会强制 acceptPre = true；
+  //      即使前端没强制，这里也兜底返回最新 prerelease，避免“永远最新”。
+  if (pre || latest.prerelease) {
+    return latest;
+  }
 
-  // 没有 stable → 兜底返回最新一条（你自己的全是 prerelease 也能被检测到）
-  return allReleases[0];
+  return latest;
 }
 
 /**
  * 兜底：从 tags 里找最新版本（releases 列表为空时使用）
- * tags 响应格式：[{ name: "v2.5.1-10", commit: {...} }]
  */
 async function tryGetLatestFromTags(): Promise<GitHubRelease | null> {
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/tags?per_page=100`;

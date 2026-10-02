@@ -58,7 +58,6 @@ function phasePercent(t: CreationTask): number {
 
 type DashboardMode = 'idle' | 'batch' | 'creating' | 'downloading';
 
-// 两个圆环统一尺寸
 const RING_SIZE = 44;
 const RING_STROKE = 10;
 
@@ -156,29 +155,17 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       };
     }
 
-    const total = stats.completed + stats.errored;
+    // ✅ 空闲模式：文字留空，只显示两个绿色 100% 圆环
+    const hasErrorIdle = stats.errored > 0;
     return {
       percent: 100,
-      strokeColor: hasError ? errorColor : successColor,
+      strokeColor: hasErrorIdle ? errorColor : successColor,
       progressStatus: 'normal' as const,
-      line1:
-        total === 0
-          ? '空闲'
-          : hasError
-            ? '所有任务已处理完'
-            : '所有任务已完成',
-      line2:
-        total === 0
-          ? ''
-          : hasError
-            ? `${stats.errored} 个任务失败`
-            : '',
+      line1: '',
+      line2: hasErrorIdle ? `${stats.errored} 个任务失败` : '',
     };
   }, [mode, batchProgress, activeCreation, stats]);
 
-  // ✅ 阶段圆环持续显示：
-  //   - 有活跃任务 → 紫色，按当前阶段显示进度
-  //   - 空闲/下载中 → 绿色 100%，表示"预检/索引全部完成"
   const phasePercentValue = activeCreation
     ? phasePercent(activeCreation)
     : 100;
@@ -186,11 +173,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     ? phaseText(activeCreation)
     : '预检/索引 已完成';
   const phaseColor = activeCreation ? '#722ed1' : '#52c41a';
-  const phaseStatus = activeCreation ? ('active' as const) : ('normal' as const);
+  const phaseStatus = activeCreation
+    ? ('active' as const)
+    : ('normal' as const);
+
+  // ✅ 空闲时右侧文字区完全不显示
+  const showTextBlock =
+    dashboard.line1 || dashboard.line2;
 
   return (
     <div className="h-full flex flex-col">
-      {/* 单行：Tab 卡片 + 两个圆环 + 文字 */}
       <div className="flex items-center gap-4 mb-3 flex-wrap">
         {/* Tab 卡片 */}
         <ul role="tablist" className="flex gap-2 shrink-0">
@@ -206,7 +198,8 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                   aria-selected={active}
                   onClick={() => setCurrentTab(tab.name)}
                   className={clsx(
-                    'relative flex flex-col items-center px-4 py-1.5 rounded-md transition-all border min-w-[64px]',
+                    // ✅ 卡片放大：px-5 py-2.5，min-w 72px
+                    'relative flex flex-col items-center px-5 py-2.5 rounded-md transition-all border min-w-[72px]',
                     active
                       ? 'bg-white border-blue-200 shadow-sm'
                       : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
@@ -214,7 +207,8 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                 >
                   <span
                     className={clsx(
-                      'text-xl font-bold leading-none',
+                      // ✅ 数字放大：text-2xl
+                      'text-2xl font-bold leading-none',
                       active ? 'text-ant-color-primary' : 'text-gray-700',
                     )}
                   >
@@ -222,7 +216,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                   </span>
                   <span
                     className={clsx(
-                      'text-[11px] mt-0.5',
+                      'text-xs mt-1',
                       active ? 'text-gray-700 font-medium' : 'text-gray-500',
                     )}
                   >
@@ -277,17 +271,22 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           </div>
         </div>
 
-        {/* 右侧文字描述，占满剩余空间 */}
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-bold text-gray-800 truncate">
-            {dashboard.line1}
-          </div>
-          {dashboard.line2 && (
-            <div className="text-xs text-gray-500 truncate mt-0.5">
-              {dashboard.line2}
+        {/* ✅ 右侧文字描述：空闲时不渲染 */}
+        {showTextBlock ? (
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-gray-800 truncate">
+              {dashboard.line1}
             </div>
-          )}
-        </div>
+            {dashboard.line2 && (
+              <div className="text-xs text-gray-500 truncate mt-0.5">
+                {dashboard.line2}
+              </div>
+            )}
+          </div>
+        ) : (
+          // 占位，保持右侧布局对齐
+          <div className="flex-1 min-w-0" />
+        )}
       </div>
 
       <div
