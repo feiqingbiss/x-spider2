@@ -56,7 +56,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
+          shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/Cargo.toml') }}
           cache-directories: |
             ~/.cargo/registry
             ~/.cargo/git
