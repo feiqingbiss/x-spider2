@@ -58,6 +58,10 @@ function phasePercent(t: CreationTask): number {
 
 type DashboardMode = 'idle' | 'batch' | 'creating' | 'downloading';
 
+// 两个圆环统一尺寸
+const RING_SIZE = 44;
+const RING_STROKE = 10;
+
 export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   const {
     currentTab,
@@ -172,15 +176,23 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [mode, batchProgress, activeCreation, stats]);
 
-  // ✅ 新增：阶段圆环只在"批量模式 + 有活跃任务"时显示
-  const showPhaseRing = mode === 'batch' && !!activeCreation;
-  const phasePercentValue = activeCreation ? phasePercent(activeCreation) : 0;
-  const phaseLabel = activeCreation ? phaseText(activeCreation) : '';
+  // ✅ 阶段圆环持续显示：
+  //   - 有活跃任务 → 紫色，按当前阶段显示进度
+  //   - 空闲/下载中 → 绿色 100%，表示"预检/索引全部完成"
+  const phasePercentValue = activeCreation
+    ? phasePercent(activeCreation)
+    : 100;
+  const phaseLabel = activeCreation
+    ? phaseText(activeCreation)
+    : '预检/索引 已完成';
+  const phaseColor = activeCreation ? '#722ed1' : '#52c41a';
+  const phaseStatus = activeCreation ? ('active' as const) : ('normal' as const);
 
   return (
     <div className="h-full flex flex-col">
-      {/* 单行：Tab 卡片 + 阶段圆环 + 总进度圆环 + 文字 */}
+      {/* 单行：Tab 卡片 + 两个圆环 + 文字 */}
       <div className="flex items-center gap-4 mb-3 flex-wrap">
+        {/* Tab 卡片 */}
         <ul role="tablist" className="flex gap-2 shrink-0">
           {tabs.map((tab) => {
             const active = tab.name === currentTab;
@@ -194,7 +206,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                   aria-selected={active}
                   onClick={() => setCurrentTab(tab.name)}
                   className={clsx(
-                    'relative flex flex-col items-center px-5 py-2 rounded-md transition-all border',
+                    'relative flex flex-col items-center px-4 py-1.5 rounded-md transition-all border min-w-[64px]',
                     active
                       ? 'bg-white border-blue-200 shadow-sm'
                       : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
@@ -202,7 +214,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                 >
                   <span
                     className={clsx(
-                      'text-2xl font-bold leading-none',
+                      'text-xl font-bold leading-none',
                       active ? 'text-ant-color-primary' : 'text-gray-700',
                     )}
                   >
@@ -210,7 +222,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                   </span>
                   <span
                     className={clsx(
-                      'text-xs mt-1',
+                      'text-[11px] mt-0.5',
                       active ? 'text-gray-700 font-medium' : 'text-gray-500',
                     )}
                   >
@@ -225,60 +237,56 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           })}
         </ul>
 
-        <div className="flex-1 min-w-0" />
+        {/* 两个圆环固定在 tab 卡片后面 */}
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-col items-center" title={phaseLabel}>
+            <Progress
+              type="circle"
+              size={RING_SIZE}
+              strokeWidth={RING_STROKE}
+              percent={phasePercentValue}
+              strokeColor={phaseColor}
+              status={phaseStatus}
+              format={(p) => (
+                <span className="text-[10px] font-bold text-gray-700">
+                  {p}%
+                </span>
+              )}
+            />
+            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+              预检/索引
+            </span>
+          </div>
+          <div className="flex flex-col items-center" title={dashboard.line2}>
+            <Progress
+              type="circle"
+              size={RING_SIZE}
+              strokeWidth={RING_STROKE}
+              percent={dashboard.percent}
+              strokeColor={dashboard.strokeColor}
+              status={dashboard.progressStatus}
+              format={(p) => (
+                <span className="text-[10px] font-bold text-gray-700">
+                  {p}%
+                </span>
+              )}
+            />
+            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+              总进度
+            </span>
+          </div>
+        </div>
 
-        {/* 右侧：阶段圆环（可选） + 总进度圆环 + 文字 */}
-        <div className="flex items-center gap-3 shrink-0 min-w-0 max-w-[420px]">
-          {/* ✅ 预检/索引进度圆环 */}
-          {showPhaseRing && activeCreation && (
-            <div
-              className="flex flex-col items-center shrink-0"
-              title={phaseLabel}
-            >
-              <Progress
-                type="circle"
-                size={40}
-                strokeWidth={10}
-                percent={phasePercentValue}
-                strokeColor="#722ed1"
-                format={(p) => (
-                  <span className="text-[10px] font-bold text-gray-700">
-                    {p}%
-                  </span>
-                )}
-              />
-              <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
-                预检/索引
-              </span>
+        {/* 右侧文字描述，占满剩余空间 */}
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-bold text-gray-800 truncate">
+            {dashboard.line1}
+          </div>
+          {dashboard.line2 && (
+            <div className="text-xs text-gray-500 truncate mt-0.5">
+              {dashboard.line2}
             </div>
           )}
-
-          {/* 总进度圆环 */}
-          <Progress
-            type="circle"
-            size={48}
-            strokeWidth={10}
-            percent={dashboard.percent}
-            strokeColor={dashboard.strokeColor}
-            status={dashboard.progressStatus}
-            format={(p) => (
-              <span className="text-[11px] font-bold text-gray-700">
-                {p}%
-              </span>
-            )}
-          />
-
-          {/* 文字描述 */}
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-bold text-gray-800 truncate">
-              {dashboard.line1}
-            </div>
-            {dashboard.line2 && (
-              <div className="text-xs text-gray-500 truncate mt-0.5">
-                {dashboard.line2}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
