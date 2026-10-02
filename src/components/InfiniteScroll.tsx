@@ -13,8 +13,8 @@ export interface InfiniteScrollProps
   threshold?: number;
 }
 
-// ✅ 已修复：最多连续请求 50 次，防止死循环
-const MAX_CONSECUTIVE_LOADS = 50;
+// 最多连续追加 30 次，避免极端情况下死循环
+const MAX_CONSECUTIVE_LOADS = 30;
 
 export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   requestFn,
@@ -23,44 +23,63 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   ...props
 }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const paramRef = useRef<LoadParam>({
-    hasMore: true,
-  });
+  const paramRef = useRef<LoadParam>({ hasMore: true });
   const loadingRef = useRef(false);
   const unmountedRef = useUnmountedRef();
 
-  const onScroll = useCallback(async () => {
-    const el = ref.current;
-    if (!el) return;
-    if (!paramRef.current.hasMore) return;
-    if (loadingRef.current) return;
+  const checkAndLoad = useCallback(
+    async (depth = 0) => {
+      const el = ref.current;
+      if (!el) return;
+      if (unmountedRef.current) return;
+      if (!paramRef.current.hasMore) return;
+      if (loadingRef.current) return;
+      if (depth > MAX_CONSECUTIVE_LOADS) return;
 
-    const thresholdReal = threshold >= 0 ? threshold : el.clientHeight;
-    let shouldContinueRequest =
-      el.scrollHeight - el.scrollTop <= el.clientHeight + thresholdReal;
+      const thresholdReal = threshold >= 0 ? threshold : el.clientHeight;
+      const distanceToBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight;
 
-    let guard = 0;
-    while (
-      shouldContinueRequest &&
-      !unmountedRef.current &&
-      guard++ < MAX_CONSECUTIVE_LOADS
-    ) {
+      // 还没接近底部 → 什么都不做
+      if (distanceToBottom > thresholdReal) return;
+
       loadingRef.current = true;
-
       try {
         paramRef.current = await requestFn(paramRef.current);
       } finally {
         loadingRef.current = false;
       }
-      shouldContinueRequest =
-        paramRef.current.hasMore &&
-        el.scrollHeight - el.scrollTop <= el.clientHeight + thresholdReal;
-    }
-  }, [requestFn, threshold, unmountedRef]);
+
+      if (unmountedRef.current) return;
+      if (!paramRef.current.hasMore) return;
+
+      // ✅ 关键：用 requestAnimationFrame 让 React 先把 DOM 渲染完，
+      //    然后再判断要不要继续拉下一页
+      requestAnimationFrame(() => {
+        if (unmountedRef.current) return;
+        if (loadingRef.current) return;
+        if (!paramRef.current.hasMore) return;
+
+        const el2 = ref.current;
+        if (!el2) return;
+
+        const stillShouldLoad =
+          el2.scrollHeight - el2.scrollTop <= el2.clientHeight + thresholdReal;
+        if (stillShouldLoad) {
+          checkAndLoad(depth + 1);
+        }
+      });
+    },
+    [requestFn, threshold, unmountedRef],
+  );
 
   useEffect(() => {
-    onScroll();
-  }, [onScroll]);
+    checkAndLoad(0);
+  }, [checkAndLoad]);
+
+  const onScroll = useCallback(() => {
+    checkAndLoad(0);
+  }, [checkAndLoad]);
 
   return (
     <div {...props} ref={ref} onScroll={onScroll}>
