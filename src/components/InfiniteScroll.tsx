@@ -11,8 +11,10 @@ export interface InfiniteScrollProps
   extends React.HTMLAttributes<HTMLDivElement> {
   requestFn: (params: LoadParam) => Promise<LoadParam>;
   threshold?: number;
-  // ✅ 新增：resetKey 变化时，内部状态会被重置（用于切换用户等场景）
+  // resetKey 变化时，内部状态被重置（用于切换用户等场景）
   resetKey?: string | number;
+  // enabled 为 false 时，不触发加载（用于等待首次数据就绪）
+  enabled?: boolean;
 }
 
 const MAX_CONSECUTIVE_LOADS = 30;
@@ -21,6 +23,7 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   requestFn,
   threshold = -1,
   resetKey,
+  enabled = true,
   children,
   ...props
 }) => {
@@ -29,7 +32,6 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   const loadingRef = useRef(false);
   const unmountedRef = useUnmountedRef();
 
-  // ✅ 记录上一次的 resetKey，用于检测"用户切换"
   const lastResetKeyRef = useRef(resetKey);
 
   const checkAndLoad = useCallback(
@@ -76,18 +78,21 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   );
 
   useEffect(() => {
-    // ✅ 切换用户时（resetKey 变化），重置内部分页状态
+    // 切换用户时（resetKey 变化），重置内部分页状态
     if (lastResetKeyRef.current !== resetKey) {
       lastResetKeyRef.current = resetKey;
       paramRef.current = { hasMore: true };
       loadingRef.current = false;
     }
+    // 只有 enabled 时才检查并加载
+    if (!enabled) return;
     checkAndLoad(0);
-  }, [resetKey, checkAndLoad]);
+  }, [resetKey, enabled, checkAndLoad]);
 
   const onScroll = useCallback(() => {
+    if (!enabled) return;
     checkAndLoad(0);
-  }, [checkAndLoad]);
+  }, [enabled, checkAndLoad]);
 
   return (
     <div {...props} ref={ref} onScroll={onScroll}>

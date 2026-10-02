@@ -29,6 +29,7 @@ export const PostListGridView: React.FC = () => {
 
   const userId = userInfo.data?.id;
 
+  // ✅ 首次加载只在这里做
   useEffect(() => {
     if (userId) {
       loadPostList().catch((err) => {
@@ -59,14 +60,13 @@ export const PostListGridView: React.FC = () => {
     [postList.list],
   );
 
+  // ✅ 只负责"加载更多"，不再做首次加载
   const loadMore = useCallback(async () => {
+    const state = useHomepageStore.getState();
+    if (!state.postList.cursor) return;
+    if (state.postList.loading) return;
     try {
-      const state = useHomepageStore.getState();
-      if (!state.postList.list) {
-        await state.loadPostList();
-      } else {
-        await state.loadMorePostList();
-      }
+      await state.loadMorePostList();
     } catch (err: any) {
       message.error(err.message);
     }
@@ -76,15 +76,18 @@ export const PostListGridView: React.FC = () => {
     await loadMore();
     const state = useHomepageStore.getState();
     return {
-      hasMore: !!state.postList.cursor,
+      hasMore: !!state.postList.cursor && !state.postList.loading,
     };
   }, [loadMore]);
+
+  // ✅ 只有首次数据就绪后，才让 InfiniteScroll 接管滚动加载
+  const readyForInfiniteScroll = !!postList.list;
 
   return (
     <InfiniteScroll
       requestFn={requestFn}
-      // ✅ 关键：把 userId 传进去，用户切换时 InfiniteScroll 内部自动重置分页状态
       resetKey={userId}
+      enabled={readyForInfiniteScroll}
       className="h-full overflow-y-auto pb-10"
       threshold={200}
     >
