@@ -45,7 +45,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
   const cookieString = useAppStateStore((s) => s.cookieString);
-  const forceFullScan = useAppStateStore((s) => s.forceFullScan);
   const filter = useHomepageStore((s) => s.filter);
 
   const getListFilePath = useCallback(async (): Promise<string> => {
