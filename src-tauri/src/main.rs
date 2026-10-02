@@ -52,7 +52,7 @@ fn main() {
     let close_to_tray = Arc::new(AtomicBool::new(true));
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(CloseToTrayFlag(close_to_tray))
         .system_tray(build_tray())
         .on_system_tray_event(|app, event| match event {
