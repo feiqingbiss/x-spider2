@@ -1,6 +1,12 @@
 /* eslint-disable react/prop-types */
 import { dialog } from '@tauri-apps/api';
 import { Button } from 'antd';
+import {
+  PlayCircleOutlined,
+  PauseCircleOutlined,
+  RedoOutlined,
+  DeleteOutlined,
+} from '@ant-design/icons';
 import * as R from 'ramda';
 import React, {
   useCallback,
@@ -26,7 +32,6 @@ export interface DownloadListProps {
 const ITEM_CLIENT_HEIGHT = 144;
 const ITEM_GAP = 16;
 
-// ✅ 新增：比较两个任务数组内容是否等价（按 gid + 关键字段）
 function tasksEqual(a: DownloadTask[], b: DownloadTask[]): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -70,8 +75,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   );
   const [listHeight, setListHeight] = useState(600);
   const listRef = useRef<HTMLDivElement>(null);
-
-  // ✅ 新增：缓存上一帧的 tasks，内容一样就复用旧引用
   const lastTasksRef = useRef<DownloadTask[]>([]);
 
   const updateListHeight = useCallback(() => {
@@ -95,7 +98,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
 
   const tasks = useMemo(() => {
     const next = filterTasks(downloadTasks);
-    // ✅ 如果内容和上一帧完全一样，复用旧引用
     if (tasksEqual(lastTasksRef.current, next)) {
       return lastTasksRef.current;
     }
@@ -139,42 +141,70 @@ export const DownloadList: React.FC<DownloadListProps> = ({
     }
   };
 
+  const disabled = tasks.length === 0;
+
   return (
     <div className="flex flex-col grow h-full overflow-hidden pb-4">
       <CreationTasks />
-      <section>
-        <span>共 {tasks.length} 个下载任务。</span>
+      <section className="flex items-center gap-2">
+        <span className="text-sm text-gray-500">
+          共 <b className="text-gray-700">{tasks.length}</b> 个下载任务。
+        </span>
       </section>
-      <ul className="flex space-x-2 mt-3">
+
+      {/* ✅ 批量操作按钮：带图标 + 彩色悬停 */}
+      <ul className="flex flex-wrap gap-2 mt-3">
         {batchActions?.includes('unpauseAll') && (
           <li>
-            <Button onClick={unpauseAll} disabled={tasks.length === 0}>
+            <Button
+              onClick={unpauseAll}
+              disabled={disabled}
+              icon={<PlayCircleOutlined />}
+              className="!text-green-600 !border-green-300 hover:!bg-green-50 hover:!text-green-700 hover:!border-green-400"
+            >
               全部开始
             </Button>
           </li>
         )}
         {batchActions?.includes('pauseAll') && (
           <li>
-            <Button onClick={pauseAll} disabled={tasks.length === 0}>
+            <Button
+              onClick={pauseAll}
+              disabled={disabled}
+              icon={<PauseCircleOutlined />}
+              className="!text-orange-600 !border-orange-300 hover:!bg-orange-50 hover:!text-orange-700 hover:!border-orange-400"
+            >
               全部暂停
             </Button>
           </li>
         )}
         {batchActions?.includes('redownloadAll') && (
           <li>
-            <Button onClick={redownloadAll} disabled={tasks.length === 0}>
+            <Button
+              onClick={redownloadAll}
+              disabled={disabled}
+              icon={<RedoOutlined />}
+              className="!text-blue-600 !border-blue-300 hover:!bg-blue-50 hover:!text-blue-700 hover:!border-blue-400"
+            >
               全部重下
             </Button>
           </li>
         )}
         {batchActions?.includes('deleteAll') && (
           <li>
-            <Button onClick={deleteAll} disabled={tasks.length === 0} danger>
+            <Button
+              onClick={deleteAll}
+              disabled={disabled}
+              icon={<DeleteOutlined />}
+              danger
+              className="hover:!bg-red-50"
+            >
               全部删除
             </Button>
           </li>
         )}
       </ul>
+
       <div
         role="list"
         className="grow pr-4 overflow-hidden relative h-full mt-4"

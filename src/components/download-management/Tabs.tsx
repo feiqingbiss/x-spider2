@@ -19,7 +19,6 @@ export interface TabsProps {
   tabs: Tab[];
 }
 
-// 阶段文字
 function phaseText(t: CreationTask): string {
   switch (t.phase) {
     case 'waiting':
@@ -39,7 +38,6 @@ function phaseText(t: CreationTask): string {
   }
 }
 
-// 按阶段估算百分比（单用户创建任务、无 batchProgress 时的兜底）
 function phasePercent(t: CreationTask): number {
   const idx = t.indexedPosts ?? 0;
   switch (t.phase) {
@@ -87,7 +85,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     (tab) => tab.name === currentTab,
   )?.children;
 
-  // 统计
   const stats = useMemo(() => {
     const creating = creationTasks.length;
     const downloading = downloadTasks.filter((t) =>
@@ -107,7 +104,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     [creationTasks],
   );
 
-  // 判断当前模式
   const mode = useMemo<DashboardMode>(() => {
     if (batchProgress && batchProgress.total > 0) return 'batch';
     if (activeCreation) return 'creating';
@@ -115,7 +111,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     return 'idle';
   }, [batchProgress, activeCreation, stats.downloading]);
 
-  // 计算仪表盘数据
   const dashboard = useMemo(() => {
     const hasError = stats.errored > 0;
     const errorColor = '#ff4d4f';
@@ -157,7 +152,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       };
     }
 
-    // idle
     const total = stats.completed + stats.errored;
     return {
       percent: 100,
@@ -178,11 +172,88 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [mode, batchProgress, activeCreation, stats]);
 
+  // ✅ 新增：阶段圆环只在"批量模式 + 有活跃任务"时显示
+  const showPhaseRing = mode === 'batch' && !!activeCreation;
+  const phasePercentValue = activeCreation ? phasePercent(activeCreation) : 0;
+  const phaseLabel = activeCreation ? phaseText(activeCreation) : '';
+
   return (
     <div className="h-full flex flex-col">
-      {/* 顶部仪表盘 */}
-      <div className="bg-white border-[1px] border-gray-200 rounded-md mb-3 px-4 py-3">
-        <div className="flex items-center gap-4">
+      {/* 单行：Tab 卡片 + 阶段圆环 + 总进度圆环 + 文字 */}
+      <div className="flex items-center gap-4 mb-3 flex-wrap">
+        <ul role="tablist" className="flex gap-2 shrink-0">
+          {tabs.map((tab) => {
+            const active = tab.name === currentTab;
+            const count = R.count<DownloadTask>((t) =>
+              tab.countStatus.includes(t.status),
+            )(downloadTasks);
+            return (
+              <li key={tab.name}>
+                <button
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setCurrentTab(tab.name)}
+                  className={clsx(
+                    'relative flex flex-col items-center px-5 py-2 rounded-md transition-all border',
+                    active
+                      ? 'bg-white border-blue-200 shadow-sm'
+                      : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
+                  )}
+                >
+                  <span
+                    className={clsx(
+                      'text-2xl font-bold leading-none',
+                      active ? 'text-ant-color-primary' : 'text-gray-700',
+                    )}
+                  >
+                    {count}
+                  </span>
+                  <span
+                    className={clsx(
+                      'text-xs mt-1',
+                      active ? 'text-gray-700 font-medium' : 'text-gray-500',
+                    )}
+                  >
+                    {tab.name}
+                  </span>
+                  {active && (
+                    <span className="absolute -bottom-[3px] left-2 right-2 h-[3px] bg-ant-color-primary rounded-full" />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        <div className="flex-1 min-w-0" />
+
+        {/* 右侧：阶段圆环（可选） + 总进度圆环 + 文字 */}
+        <div className="flex items-center gap-3 shrink-0 min-w-0 max-w-[420px]">
+          {/* ✅ 预检/索引进度圆环 */}
+          {showPhaseRing && activeCreation && (
+            <div
+              className="flex flex-col items-center shrink-0"
+              title={phaseLabel}
+            >
+              <Progress
+                type="circle"
+                size={40}
+                strokeWidth={10}
+                percent={phasePercentValue}
+                strokeColor="#722ed1"
+                format={(p) => (
+                  <span className="text-[10px] font-bold text-gray-700">
+                    {p}%
+                  </span>
+                )}
+              />
+              <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+                预检/索引
+              </span>
+            </div>
+          )}
+
+          {/* 总进度圆环 */}
           <Progress
             type="circle"
             size={48}
@@ -196,8 +267,10 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               </span>
             )}
           />
-          <div className="flex-1 min-w-0">
-            <div className="text-base font-bold text-gray-800 truncate">
+
+          {/* 文字描述 */}
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold text-gray-800 truncate">
               {dashboard.line1}
             </div>
             {dashboard.line2 && (
@@ -209,52 +282,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         </div>
       </div>
 
-      {/* Tab 卡片行 */}
-      <ul role="tablist" className="flex gap-2 mb-3">
-        {tabs.map((tab) => {
-          const active = tab.name === currentTab;
-          const count = R.count<DownloadTask>((t) =>
-            tab.countStatus.includes(t.status),
-          )(downloadTasks);
-          return (
-            <li key={tab.name}>
-              <button
-                role="tab"
-                aria-selected={active}
-                onClick={() => setCurrentTab(tab.name)}
-                className={clsx(
-                  'relative flex flex-col items-center px-5 py-2 rounded-md transition-all border',
-                  active
-                    ? 'bg-white border-blue-200 shadow-sm'
-                    : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
-                )}
-              >
-                <span
-                  className={clsx(
-                    'text-2xl font-bold leading-none',
-                    active ? 'text-ant-color-primary' : 'text-gray-700',
-                  )}
-                >
-                  {count}
-                </span>
-                <span
-                  className={clsx(
-                    'text-xs mt-1',
-                    active ? 'text-gray-700 font-medium' : 'text-gray-500',
-                  )}
-                >
-                  {tab.name}
-                </span>
-                {active && (
-                  <span className="absolute -bottom-[3px] left-2 right-2 h-[3px] bg-ant-color-primary rounded-full" />
-                )}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-
-      {/* Tab 内容 */}
       <div
         role="tabpanel"
         aria-label={currentTab}

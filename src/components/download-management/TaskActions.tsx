@@ -16,7 +16,7 @@ export interface TaskActionsProps {
 
 export const TaskActions: React.FC<TaskActionsProps> = ({ actions }) => {
   return (
-    <ul className="flex space-x-3 text-sm">
+    <ul className="flex flex-wrap gap-1.5 text-xs">
       {actions.map((action) => (
         <li key={action.name}>
           <button
@@ -24,13 +24,21 @@ export const TaskActions: React.FC<TaskActionsProps> = ({ actions }) => {
             aria-label={action.name}
             title={action.name}
             className={clsx(
-              'bg-transparent transition-colors space-x-1 hover:text-gray-500',
-              action.primary && 'text-blue-500 hover:!text-blue-400',
-              action.danger && 'text-red-500 hover:!text-red-400',
+              'flex items-center gap-1 px-2.5 py-1 rounded-md border transition-all',
+              'active:scale-95',
+              action.primary &&
+                'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100 hover:border-blue-300',
+              action.danger &&
+                'text-red-600 bg-red-50 border-red-200 hover:bg-red-100 hover:border-red-300',
+              !action.primary &&
+                !action.danger &&
+                'text-gray-600 bg-gray-50 border-gray-200 hover:bg-gray-100 hover:border-gray-300',
             )}
           >
-            <span>{action.icon}</span>
-            <span>{action.name}</span>
+            {action.icon && (
+              <span className="text-[13px] leading-none">{action.icon}</span>
+            )}
+            <span className="leading-none">{action.name}</span>
           </button>
         </li>
       ))}
