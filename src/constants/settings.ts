@@ -16,7 +16,9 @@ export const DEFAULT_SETTINGS: Settings = {
   app: {
     autoCheckUpdate: true,
     acceptPrerelease: false,
-    writeLogs: true, // 改为 true，确保日志写入文件
+    writeLogs: true,
+    // ✅ 默认开启"关闭到托盘"
+    minimizeToTrayOnClose: true,
   },
 };
 

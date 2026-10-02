@@ -144,6 +144,15 @@ export const Settings: React.FC = () => {
         >
           <Switch />
         </Item>
+        {/* ✅ 新增：关闭窗口时隐藏到托盘开关 */}
+        <Item
+          label="关闭窗口时最小化到托盘"
+          settingKey="minimizeToTrayOnClose"
+          valuePropName="checked"
+          description="开启后，点击关闭按钮会隐藏到托盘；从托盘菜单选「退出」才会真正关闭"
+        >
+          <Switch />
+        </Item>
         <Space>
           <Button onClick={async () => showInFolder(await path.appLogDir())}>
             打开日志文件夹

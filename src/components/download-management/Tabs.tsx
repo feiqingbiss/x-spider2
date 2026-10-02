@@ -19,7 +19,7 @@ export interface TabsProps {
   tabs: Tab[];
 }
 
-// ✅ 阶段文字
+// 阶段文字
 function phaseText(t: CreationTask): string {
   switch (t.phase) {
     case 'waiting':
@@ -39,17 +39,15 @@ function phaseText(t: CreationTask): string {
   }
 }
 
-// ✅ 根据阶段估算环状百分比（没有 batchProgress 时用）
+// 按阶段估算百分比（单用户创建任务、无 batchProgress 时的兜底）
 function phasePercent(t: CreationTask): number {
   const idx = t.indexedPosts ?? 0;
   switch (t.phase) {
     case 'precheck':
       return 10;
     case 'index':
-      // 20% ~ 55%
       return Math.round(20 + Math.min((idx / 100) * 35, 35));
     case 'tweets':
-      // 60% ~ 85%
       return Math.round(60 + Math.min((idx / 100) * 25, 25));
     case 'creating':
       return 92;
@@ -59,6 +57,8 @@ function phasePercent(t: CreationTask): number {
       return 5;
   }
 }
+
+type DashboardMode = 'idle' | 'batch' | 'creating' | 'downloading';
 
 export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   const {
@@ -87,7 +87,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     (tab) => tab.name === currentTab,
   )?.children;
 
-  // ✅ 统计各项数量
+  // 统计
   const stats = useMemo(() => {
     const creating = creationTasks.length;
     const downloading = downloadTasks.filter((t) =>
@@ -102,147 +102,163 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     return { creating, downloading, completed, errored };
   }, [creationTasks.length, downloadTasks]);
 
-  // ✅ 当前活跃的 creation 任务
   const activeCreation = useMemo(
     () => creationTasks.find((t) => t.status === 'active'),
     [creationTasks],
   );
 
-  // ✅ 计算进度百分比与状态
-  const { percent, strokeColor, progressStatus } = useMemo(() => {
-    // 1. 有批量进度优先用它
-    if (batchProgress && batchProgress.total > 0) {
+  // 判断当前模式
+  const mode = useMemo<DashboardMode>(() => {
+    if (batchProgress && batchProgress.total > 0) return 'batch';
+    if (activeCreation) return 'creating';
+    if (stats.downloading > 0) return 'downloading';
+    return 'idle';
+  }, [batchProgress, activeCreation, stats.downloading]);
+
+  // 计算仪表盘数据
+  const dashboard = useMemo(() => {
+    const hasError = stats.errored > 0;
+    const errorColor = '#ff4d4f';
+    const activeColor = '#1d9bf0';
+    const successColor = '#52c41a';
+
+    if (mode === 'batch' && batchProgress) {
       const p = Math.round(
         (batchProgress.completed / batchProgress.total) * 100,
       );
       return {
         percent: Math.max(0, Math.min(100, p)),
-        strokeColor: '#1d9bf0',
+        strokeColor: hasError ? errorColor : activeColor,
         progressStatus: 'active' as const,
+        line1: `正在处理 @${batchProgress.currentUser || '...'}`,
+        line2: `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`,
       };
     }
-    // 2. 有活跃 creation 任务，根据阶段估算
-    if (activeCreation) {
+
+    if (mode === 'creating' && activeCreation) {
       return {
         percent: phasePercent(activeCreation),
-        strokeColor: '#1d9bf0',
+        strokeColor: hasError ? errorColor : activeColor,
         progressStatus: 'active' as const,
+        line1: `正在处理 @${activeCreation.user.screenName}`,
+        line2: phaseText(activeCreation),
       };
     }
-    // 3. 空闲：用完成占比
-    const denom = stats.downloading + stats.completed + stats.errored;
-    const p = denom > 0 ? Math.round((stats.completed / denom) * 100) : 0;
+
+    if (mode === 'downloading') {
+      const denom = stats.downloading + stats.completed + stats.errored;
+      const p = denom > 0 ? Math.round((stats.completed / denom) * 100) : 0;
+      return {
+        percent: p,
+        strokeColor: hasError ? errorColor : activeColor,
+        progressStatus: 'active' as const,
+        line1: '文件下载中',
+        line2: `${stats.completed} / ${denom} 已完成`,
+      };
+    }
+
+    // idle
+    const total = stats.completed + stats.errored;
     return {
-      percent: p,
-      strokeColor: stats.errored > 0 ? '#ff4d4f' : '#1d9bf0',
+      percent: 100,
+      strokeColor: hasError ? errorColor : successColor,
       progressStatus: 'normal' as const,
+      line1:
+        total === 0
+          ? '空闲'
+          : hasError
+            ? '所有任务已处理完'
+            : '所有任务已完成',
+      line2:
+        total === 0
+          ? ''
+          : hasError
+            ? `${stats.errored} 个任务失败`
+            : '',
     };
-  }, [batchProgress, activeCreation, stats]);
+  }, [mode, batchProgress, activeCreation, stats]);
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between">
-        <ul role="tablist" className="flex space-x-6">
-          {tabs.map((tab) => (
-            <li key={tab.name} className="w-">
-              <div className="relative">
-                {tab.name === currentTab && (
-                  <div className="absolute w-full h-2 rounded-full bg-ant-color-primary left-0 bottom-0" />
-                )}
-                <button
-                  aria-selected={tab.name === currentTab}
-                  role="tab"
-                  onClick={() => setCurrentTab(tab.name)}
-                  className={clsx(
-                    'bg-transparent text-xl relative transition-colors hover:text-ant-color-primary',
-                    tab.name === currentTab && 'font-bold !text-black',
-                  )}
-                >
-                  {tab.name}
-                  <span>
-                    (
-                    {R.count<DownloadTask>((t) =>
-                      tab.countStatus.includes(t.status),
-                    )(downloadTasks)}
-                    )
-                  </span>
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-
-        {/* ✅ 右侧进度指示器 */}
-        <div className="flex items-center gap-3 pr-2 select-none">
+      {/* 顶部仪表盘 */}
+      <div className="bg-white border-[1px] border-gray-200 rounded-md mb-3 px-4 py-3">
+        <div className="flex items-center gap-4">
           <Progress
             type="circle"
-            size={44}
+            size={48}
             strokeWidth={10}
-            percent={percent}
-            strokeColor={strokeColor}
-            status={progressStatus}
+            percent={dashboard.percent}
+            strokeColor={dashboard.strokeColor}
+            status={dashboard.progressStatus}
             format={(p) => (
-              <span className="text-[10px] font-bold text-gray-700">
+              <span className="text-[11px] font-bold text-gray-700">
                 {p}%
               </span>
             )}
           />
-          <div className="text-[11px] text-gray-500 leading-snug min-w-[160px]">
-            {batchProgress ? (
-              <>
-                <div className="text-gray-700 font-bold">
-                  批量检索 {batchProgress.completed}/{batchProgress.total}
-                </div>
-                <div className="truncate max-w-[200px]">
-                  当前：{batchProgress.currentUser || '...'}
-                </div>
-              </>
-            ) : activeCreation ? (
-              <>
-                <div className="text-gray-700 font-bold truncate max-w-[200px]">
-                  正在处理 @{activeCreation.user.screenName}
-                </div>
-                <div className="truncate max-w-[200px]">
-                  {phaseText(activeCreation)}
-                </div>
-              </>
-            ) : (
-              <>
-                <div>
-                  <span className="text-blue-500 font-bold">
-                    {stats.creating}
-                  </span>{' '}
-                  检索中
-                  <span className="mx-1 text-gray-300">·</span>
-                  <span className="text-orange-500 font-bold">
-                    {stats.downloading}
-                  </span>{' '}
-                  下载中
-                </div>
-                <div>
-                  <span className="text-green-600 font-bold">
-                    {stats.completed}
-                  </span>{' '}
-                  已完成
-                  {stats.errored > 0 && (
-                    <>
-                      <span className="mx-1 text-gray-300">·</span>
-                      <span className="text-red-500 font-bold">
-                        {stats.errored}
-                      </span>{' '}
-                      失败
-                    </>
-                  )}
-                </div>
-              </>
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-bold text-gray-800 truncate">
+              {dashboard.line1}
+            </div>
+            {dashboard.line2 && (
+              <div className="text-xs text-gray-500 truncate mt-0.5">
+                {dashboard.line2}
+              </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Tab 卡片行 */}
+      <ul role="tablist" className="flex gap-2 mb-3">
+        {tabs.map((tab) => {
+          const active = tab.name === currentTab;
+          const count = R.count<DownloadTask>((t) =>
+            tab.countStatus.includes(t.status),
+          )(downloadTasks);
+          return (
+            <li key={tab.name}>
+              <button
+                role="tab"
+                aria-selected={active}
+                onClick={() => setCurrentTab(tab.name)}
+                className={clsx(
+                  'relative flex flex-col items-center px-5 py-2 rounded-md transition-all border',
+                  active
+                    ? 'bg-white border-blue-200 shadow-sm'
+                    : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
+                )}
+              >
+                <span
+                  className={clsx(
+                    'text-2xl font-bold leading-none',
+                    active ? 'text-ant-color-primary' : 'text-gray-700',
+                  )}
+                >
+                  {count}
+                </span>
+                <span
+                  className={clsx(
+                    'text-xs mt-1',
+                    active ? 'text-gray-700 font-medium' : 'text-gray-500',
+                  )}
+                >
+                  {tab.name}
+                </span>
+                {active && (
+                  <span className="absolute -bottom-[3px] left-2 right-2 h-[3px] bg-ant-color-primary rounded-full" />
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* Tab 内容 */}
       <div
         role="tabpanel"
         aria-label={currentTab}
-        className="mt-4 grow relative overflow-hidden"
+        className="grow relative overflow-hidden"
       >
         {currentTabChildren}
       </div>

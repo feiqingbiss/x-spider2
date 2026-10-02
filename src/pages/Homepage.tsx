@@ -18,6 +18,7 @@ import {
   FileTextOutlined,
   CloudDownloadOutlined,
   ThunderboltFilled,
+  CloseCircleOutlined,
 } from '@ant-design/icons';
 import { PageHeader } from '../components/PageHeader';
 import { PostListGridView } from '../components/homepage/PostListGridView';
@@ -41,7 +42,6 @@ const RETRY_DELAY_MS = 8000;
 const ROUND_DELAY_MS = 30000;
 const RETRY_ROUNDS = 2;
 
-// ✅ 批量结束后，等待 creationTasks 跑完的最长时间（毫秒）
 const WAIT_CREATION_TASKS_MAX_MS = 60000;
 
 const FAILED_USERS_FILE = 'failed_users.txt';
@@ -119,6 +119,9 @@ export const Homepage: React.FC = () => {
   const [userListCount, setUserListCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
 
+  // ✅ H：批量取消控制
+  const batchAbortRef = useRef<AbortController | null>(null);
+
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
 
@@ -148,8 +151,6 @@ export const Homepage: React.FC = () => {
     setForceFullScan: s.setForceFullScan,
   }));
 
-  // ✅ 优化：用递增 token 判断请求是否已过期，避免快速切换用户时
-  //            旧请求的错误提示/历史记录污染当前结果
   const searchTokenRef = useRef(0);
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
@@ -205,7 +206,6 @@ export const Homepage: React.FC = () => {
     return text;
   };
 
-  // ✅ 优化：用 token 判断是否已被新搜索取代
   const startSearch = async (sn: string) => {
     const cleanedSn = cleanUsername(sn);
     if (!cleanedSn) return;
@@ -225,36 +225,36 @@ export const Homepage: React.FC = () => {
     }
   };
 
+  // ✅ H：加 signal 支持取消
   const processOneUser = async (
     name: string,
     successCounter: { count: number },
     timeoutCounter: { count: number },
+    signal: AbortSignal,
   ): Promise<boolean> => {
     const downloadStore = useDownloadStore.getState();
     const userLog = window.log.category('USER');
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      if (signal.aborted) return false;
+
       try {
         const user = await withTimeout(getUser(name), TIMEOUT_MS);
+        if (signal.aborted) return false;
         downloadStore.createCreationTask(user, filter);
         successCounter.count++;
         return true;
       } catch (err: any) {
+        if (signal.aborted) return false;
+
         const errMsg = err?.message || String(err);
         userLog.warn(`用户 ${name} 加载失败 (尝试 ${attempt}/${MAX_RETRIES})`, {
           message: errMsg,
         });
 
         if (isRateLimitError(err)) {
+          // ✅ E：去掉了"请求过于频繁"弹窗提示
           const waitMs = RETRY_DELAY_MS * attempt * 2;
-          if (attempt === 1) {
-            notification.warning({
-              message: '请求过于频繁',
-              description: `已自动暂停 ${Math.round(waitMs / 1000)} 秒后继续`,
-              duration: 4,
-              placement: 'topRight',
-            });
-          }
           await delay(waitMs);
           continue;
         }
@@ -264,7 +264,6 @@ export const Homepage: React.FC = () => {
           continue;
         }
 
-        // 最终失败：只记录日志，批量汇总时统一展示
         if (errMsg.includes('超时')) {
           timeoutCounter.count++;
         }
@@ -283,10 +282,13 @@ export const Homepage: React.FC = () => {
     timeoutCounter: { count: number },
     progressBase: number,
     progressTotal: number,
+    signal: AbortSignal,
   ): Promise<string[]> => {
     const failed: string[] = [];
 
     for (let i = 0; i < usernames.length; i += BATCH_SIZE) {
+      if (signal.aborted) break;
+
       const batch = usernames.slice(
         i,
         Math.min(i + BATCH_SIZE, usernames.length),
@@ -294,7 +296,6 @@ export const Homepage: React.FC = () => {
 
       await Promise.all(
         batch.map(async (name, j) => {
-          // ✅ 已修复：用 map 索引 j，避免重名用户进度算错
           const index = i + j;
           setBatchProgress({
             total: progressTotal,
@@ -306,8 +307,9 @@ export const Homepage: React.FC = () => {
             name,
             successCounter,
             timeoutCounter,
+            signal,
           );
-          if (!ok) failed.push(name);
+          if (!ok && !signal.aborted) failed.push(name);
 
           setBatchProgress({
             total: progressTotal,
@@ -349,12 +351,7 @@ export const Homepage: React.FC = () => {
     }
   };
 
-  /**
-   * ✅ 新增：等待所有 creationTasks 跑完（预检 + 下载任务创建）。
-   * 最长等 WAIT_CREATION_TASKS_MAX_MS，避免无限等待。
-   */
   const waitForCreationTasksDone = async (): Promise<void> => {
-    // 给 creationTasks 一点入队时间
     await delay(500);
     const startTs = Date.now();
     while (
@@ -362,6 +359,14 @@ export const Homepage: React.FC = () => {
       Date.now() - startTs < WAIT_CREATION_TASKS_MAX_MS
     ) {
       await delay(1000);
+    }
+  };
+
+  // ✅ H：取消批量下载
+  const cancelBatch = () => {
+    if (batchAbortRef.current) {
+      batchAbortRef.current.abort();
+      message.info('正在取消批量下载...');
     }
   };
 
@@ -400,6 +405,10 @@ export const Homepage: React.FC = () => {
       usernames = shuffleArray(usernames);
 
       setIsBatchRunning(true);
+      const ctrl = new AbortController();
+      batchAbortRef.current = ctrl;
+      const signal = ctrl.signal;
+
       const total = usernames.length;
       setBatchProgress({
         total,
@@ -410,13 +419,7 @@ export const Homepage: React.FC = () => {
       const successCounter = { count: 0 };
       const timeoutCounter = { count: 0 };
 
-      if (forceFullScan) {
-        notification.info({
-          message: '已开启完整遍历',
-          description: '本次批量下载将忽略预检结果，遍历所有用户的历史帖子',
-          duration: 4,
-        });
-      }
+      // ✅ E：去掉了"已开启完整遍历"的提示
 
       let pending = await processBatch(
         usernames,
@@ -424,22 +427,17 @@ export const Homepage: React.FC = () => {
         timeoutCounter,
         0,
         total,
+        signal,
       );
 
       for (
         let round = 1;
-        round <= RETRY_ROUNDS && pending.length > 0;
+        round <= RETRY_ROUNDS && pending.length > 0 && !signal.aborted;
         round++
       ) {
-        notification.info({
-          message: `第 ${round} 轮重试`,
-          description: `剩余 ${pending.length} 个用户，${
-            ROUND_DELAY_MS / 1000
-          } 秒后开始`,
-          duration: 4,
-          placement: 'topRight',
-        });
+        // ✅ E：去掉了"第 N 轮重试"的弹窗提示
         await delay(ROUND_DELAY_MS);
+        if (signal.aborted) break;
 
         setBatchProgress({
           total,
@@ -453,12 +451,22 @@ export const Homepage: React.FC = () => {
           timeoutCounter,
           total - pending.length,
           total,
+          signal,
         );
         pending = stillFailed;
       }
 
-      // ✅ 新增：等所有 creationTasks 跑完，这样预检阶段收集的不活跃用户
-      //            才能被完整 drain 出来
+      if (signal.aborted) {
+        // 用户取消 → 只清理状态，不写文件、不弹汇总
+        notification.info({
+          message: '批量下载已取消',
+          description: `已完成 ${successCounter.count} 个用户`,
+          duration: 3,
+          placement: 'topRight',
+        });
+        return;
+      }
+
       setBatchProgress({
         total,
         completed: total,
@@ -468,10 +476,8 @@ export const Homepage: React.FC = () => {
 
       await fetchUserListCount();
 
-      // ✅ 新增：取出 creation.ts 里预检阶段收集的不活跃用户
       const inactiveUsers = drainInactiveUsers();
 
-      // ✅ 合并"下载失败"和"不活跃"两类，去重后一次性覆盖写入 failed_users.txt
       const finalList = Array.from(new Set([...pending, ...inactiveUsers]));
       await writeFailedUsersFile(finalList);
 
@@ -487,7 +493,7 @@ export const Homepage: React.FC = () => {
       }
       const extraMsg = extras.length > 0 ? `（${extras.join('，')}）` : '';
 
-      // 只弹一次汇总
+      // ✅ E：只保留最终一次汇总弹窗
       if (finalList.length > 0) {
         notification.warning({
           message: '批量下载任务创建完成',
@@ -504,9 +510,14 @@ export const Homepage: React.FC = () => {
         });
       }
     } catch (err: any) {
+      if (batchAbortRef.current?.signal.aborted) {
+        // 已取消，不报错
+        return;
+      }
       window.log.error('批量下载失败', err);
       message.error(`批量下载失败：${err?.message || '未知错误'}`);
     } finally {
+      batchAbortRef.current = null;
       setBatchProgress(null);
       setIsBatchRunning(false);
     }
@@ -649,15 +660,22 @@ export const Homepage: React.FC = () => {
                   </div>
                 </Tooltip>
 
+                {/* ✅ H：批量下载中显示"取消批量下载" */}
                 <Button
                   type="primary"
                   danger
-                  icon={<CloudDownloadOutlined />}
-                  onClick={batchDownload}
-                  disabled={!!batchProgress || isBatchRunning}
+                  icon={
+                    isBatchRunning ? (
+                      <CloseCircleOutlined />
+                    ) : (
+                      <CloudDownloadOutlined />
+                    )
+                  }
+                  onClick={isBatchRunning ? cancelBatch : batchDownload}
+                  disabled={!isBatchRunning && !!batchProgress}
                   className="font-bold px-6"
                 >
-                  {isBatchRunning ? '批量下载中...' : '一键批量下载'}
+                  {isBatchRunning ? '取消批量下载' : '一键批量下载'}
                 </Button>
               </Space>
             </div>
