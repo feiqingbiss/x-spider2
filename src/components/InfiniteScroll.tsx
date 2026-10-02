@@ -11,14 +11,16 @@ export interface InfiniteScrollProps
   extends React.HTMLAttributes<HTMLDivElement> {
   requestFn: (params: LoadParam) => Promise<LoadParam>;
   threshold?: number;
+  // ✅ 新增：resetKey 变化时，内部状态会被重置（用于切换用户等场景）
+  resetKey?: string | number;
 }
 
-// 最多连续追加 30 次，避免极端情况下死循环
 const MAX_CONSECUTIVE_LOADS = 30;
 
 export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   requestFn,
   threshold = -1,
+  resetKey,
   children,
   ...props
 }) => {
@@ -26,6 +28,9 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   const paramRef = useRef<LoadParam>({ hasMore: true });
   const loadingRef = useRef(false);
   const unmountedRef = useUnmountedRef();
+
+  // ✅ 记录上一次的 resetKey，用于检测"用户切换"
+  const lastResetKeyRef = useRef(resetKey);
 
   const checkAndLoad = useCallback(
     async (depth = 0) => {
@@ -40,7 +45,6 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
       const distanceToBottom =
         el.scrollHeight - el.scrollTop - el.clientHeight;
 
-      // 还没接近底部 → 什么都不做
       if (distanceToBottom > thresholdReal) return;
 
       loadingRef.current = true;
@@ -53,8 +57,6 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
       if (unmountedRef.current) return;
       if (!paramRef.current.hasMore) return;
 
-      // ✅ 关键：用 requestAnimationFrame 让 React 先把 DOM 渲染完，
-      //    然后再判断要不要继续拉下一页
       requestAnimationFrame(() => {
         if (unmountedRef.current) return;
         if (loadingRef.current) return;
@@ -74,8 +76,14 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   );
 
   useEffect(() => {
+    // ✅ 切换用户时（resetKey 变化），重置内部分页状态
+    if (lastResetKeyRef.current !== resetKey) {
+      lastResetKeyRef.current = resetKey;
+      paramRef.current = { hasMore: true };
+      loadingRef.current = false;
+    }
     checkAndLoad(0);
-  }, [checkAndLoad]);
+  }, [resetKey, checkAndLoad]);
 
   const onScroll = useCallback(() => {
     checkAndLoad(0);

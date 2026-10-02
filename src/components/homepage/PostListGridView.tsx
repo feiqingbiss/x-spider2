@@ -16,7 +16,6 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 
 export const PostListGridView: React.FC = () => {
   const { message } = App.useApp();
-  // ✅ 优化：useShallow
   const { userInfo, postList } = useHomepageStore(
     useShallow((state) => ({
       postList: state.postList,
@@ -84,6 +83,8 @@ export const PostListGridView: React.FC = () => {
   return (
     <InfiniteScroll
       requestFn={requestFn}
+      // ✅ 关键：把 userId 传进去，用户切换时 InfiniteScroll 内部自动重置分页状态
+      resetKey={userId}
       className="h-full overflow-y-auto pb-10"
       threshold={200}
     >
