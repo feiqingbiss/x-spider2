@@ -17,14 +17,14 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 // ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
 
-// ✅ 独立的缩略图组件，处理缺失 URL 和加载失败的情况
+// ✅ 纯前端解耦的缩略图组件，仅负责加载失败时的优雅降级
 const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
   url,
   mediaId,
 }) => {
   const [hasError, setHasError] = useState(false);
 
-  // ✅ 双重兜底：如果 url 为空，尝试用 mediaId 拼接
+  // 如果 API 没有返回 url，用 mediaId 拼接官方备用地址
   let finalUrl = url;
   if (!finalUrl && mediaId) {
     finalUrl = `https://pbs.twimg.com/media/${mediaId}?format=jpg&name=small`;
@@ -186,7 +186,7 @@ export const PostListGridView: React.FC = () => {
           return (
             <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
-                {/* ✅ 传入 mediaId 作为兜底 */}
+                {/* ✅ 纯前端兜底缩略图 */}
                 <MediaThumbnail url={media.url} mediaId={media.id} />
 
                 {media.type === MediaType.Video && (
