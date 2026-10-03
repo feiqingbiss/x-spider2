@@ -21,22 +21,47 @@ function bootstrapLogger() {
 
   window.addEventListener('error', (ev) => {
     if (isResizeObserverNoise(ev.message || '')) return;
-    log.error('Window error', {
-      error: ev.error,
-      message: ev.message,
-      filename: ev.filename,
-    });
+
+    // ✅ 过滤掉浏览器扩展产生的错误，避免污染日志
+    if (
+      ev.filename &&
+      (ev.filename.startsWith('chrome-extension://') ||
+        ev.filename.startsWith('moz-extension://') ||
+        ev.filename.startsWith('safari-extension://'))
+    ) {
+      return;
+    }
+
+    // ✅ 安全提取错误信息，避免直接传递复杂对象导致序列化崩溃
+    const safeInfo = {
+      message: ev.message || 'Unknown error',
+      filename: ev.filename || 'unknown',
+      lineno: ev.lineno,
+      colno: ev.colno,
+      errorName: ev.error?.name,
+      errorMessage: ev.error?.message,
+      errorStack: ev.error?.stack,
+    };
+
+    log.error('Window error', safeInfo);
   });
 
   window.addEventListener('unhandledrejection', (ev) => {
     const reason = ev.reason;
     const reasonStr =
       typeof reason === 'string' ? reason : reason?.message || '';
+
     if (isResizeObserverNoise(reasonStr)) return;
-    log.error('Unhandled rejection', {
-      promise: ev.promise,
-      reason: ev.reason,
-    });
+
+    // ✅ 安全提取 rejection 信息
+    const safeInfo = {
+      reasonName: reason?.name,
+      reasonMessage: reason?.message,
+      reasonStack: reason?.stack,
+      reasonStr: reasonStr || String(reason),
+    };
+
+    log.error('Unhandled rejection', safeInfo);
   });
 }
 
