@@ -5,8 +5,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { useDownloadStore } from '../../stores/download';
 import clsx from 'clsx';
 import { AriaStatus } from '../../utils/aria2';
-import * as R from 'ramda';
-import { DownloadTask } from '../../interfaces/DownloadTask';
 import { CreationTask } from '../../interfaces/CreationTask';
 
 export interface Tab {
@@ -62,6 +60,16 @@ const RING_SIZE = 44;
 const RING_STROKE = 10;
 
 export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
+  // ✅ 提前把 tabs 的 name/countStatus 提取出来，避免 selector 内闭包引用不稳定
+  const tabNames = useMemo(() => tabs.map((t) => t.name), [tabs]);
+  const tabCountStatusMap = useMemo(() => {
+    const map: Record<string, AriaStatus[]> = {};
+    tabs.forEach((t) => {
+      map[t.name] = t.countStatus;
+    });
+    return map;
+  }, [tabs]);
+
   const {
     currentTab,
     setCurrentTab,
@@ -77,16 +85,19 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       const downloading = s.downloadTasks.filter((t) =>
         ['active', 'waiting', 'paused'].includes(t.status),
       ).length;
-      const completed = s.downloadTasks.filter((t) => t.status === 'complete').length;
+      const completed = s.downloadTasks.filter(
+        (t) => t.status === 'complete',
+      ).length;
       const errored = s.downloadTasks.filter((t) => t.status === 'error').length;
 
       // 提前计算好每个 tab 的计数，避免在渲染时遍历
       const counts: Record<string, number> = {};
-      tabs.forEach((tab) => {
-        counts[tab.name] = s.downloadTasks.filter((t) =>
-          tab.countStatus.includes(t.status),
+      for (const name of tabNames) {
+        const countStatus = tabCountStatusMap[name] || [];
+        counts[name] = s.downloadTasks.filter((t) =>
+          countStatus.includes(t.status),
         ).length;
-      });
+      }
 
       return {
         currentTab: s.currentTab,
@@ -107,7 +118,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     }
   }, [currentTab, tabs, setCurrentTab]);
 
-  const currentTabChildren = tabs.find((tab) => tab.name === currentTab)?.children;
+  const currentTabChildren = tabs.find(
+    (tab) => tab.name === currentTab,
+  )?.children;
 
   const stats = useMemo(() => {
     return {
@@ -137,7 +150,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     const successColor = '#52c41a';
 
     if (mode === 'batch' && batchProgress) {
-      const p = Math.round((batchProgress.completed / batchProgress.total) * 100);
+      const p = Math.round(
+        (batchProgress.completed / batchProgress.total) * 100,
+      );
       return {
         percent: Math.max(0, Math.min(100, p)),
         strokeColor: hasError ? errorColor : activeColor,
@@ -179,10 +194,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [mode, batchProgress, activeCreation, stats]);
 
-  const phasePercentValue = activeCreation ? phasePercent(activeCreation) : 100;
-  const phaseLabel = activeCreation ? phaseText(activeCreation) : '预检/索引 已完成';
+  const phasePercentValue = activeCreation
+    ? phasePercent(activeCreation)
+    : 100;
+  const phaseLabel = activeCreation
+    ? phaseText(activeCreation)
+    : '预检/索引 已完成';
   const phaseColor = activeCreation ? '#722ed1' : '#52c41a';
-  const phaseStatus = activeCreation ? ('active' as const) : ('normal' as const);
+  const phaseStatus = activeCreation
+    ? ('active' as const)
+    : ('normal' as const);
 
   const showTextBlock = dashboard.line1 || dashboard.line2;
 
@@ -243,7 +264,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={phaseColor}
               status={phaseStatus}
               format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">{p}%</span>
+                <span className="text-[10px] font-bold text-gray-700">
+                  {p}%
+                </span>
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
@@ -259,7 +282,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={dashboard.strokeColor}
               status={dashboard.progressStatus}
               format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">{p}%</span>
+                <span className="text-[10px] font-bold text-gray-700">
+                  {p}%
+                </span>
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
