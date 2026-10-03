@@ -82,8 +82,7 @@ export async function getUser(screenName: string): Promise<TwitterUser> {
         highlights_tweets_tab_ui_enabled: true,
         responsive_web_twitter_article_notes_tab_enabled: false,
         creator_subscriptions_tweet_preview_api_enabled: true,
-        responsive_web_graphql_skip_user_profile_image_extensions_enabled:
-          false,
+        responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
         responsive_web_graphql_timeline_navigation_enabled: true,
       }),
       fieldToggles: JSON.stringify({ withAuxiliaryUserLabels: false }),
@@ -96,6 +95,12 @@ export async function getUser(screenName: string): Promise<TwitterUser> {
   });
   ensureResponse(resp);
 
+  if (resp.body?.errors) {
+    throw new Error(
+      `Twitter API 报错: ${resp.body.errors[0]?.message || '未知错误'}`,
+    );
+  }
+
   const data = R.path(['data', 'user', 'result', 'legacy'])(resp.body) as any;
 
   if (!data) {
@@ -106,9 +111,7 @@ export async function getUser(screenName: string): Promise<TwitterUser> {
     avatar: data?.profile_image_url_https,
     name: data?.name,
     screenName: data?.screen_name,
-    id: R.path<string>(['data', 'user', 'result', 'rest_id'])(
-      resp.body,
-    ) as string,
+    id: R.path<string>(['data', 'user', 'result', 'rest_id'])(resp.body) as string,
     mediaCount: data?.media_count,
     registerTime: dayjs(data.created_at),
   };
@@ -168,12 +171,8 @@ const mapTwitterPosts = (posts: any[]) => {
   return R.map<any, TwitterPost>((item) => {
     return {
       id: item?.rest_id,
-      views: R.isNotNil(item?.views?.count)
-        ? Number(item.views.count)
-        : undefined,
-      createdAt: item.legacy?.created_at
-        ? dayjs(item.legacy?.created_at)
-        : undefined,
+      views: R.isNotNil(item?.views?.count) ? Number(item.views.count) : undefined,
+      createdAt: item.legacy?.created_at ? dayjs(item.legacy?.created_at) : undefined,
       bookmarkCount: item?.legacy?.bookmark_count,
       bookmarked: item?.legacy?.bookmarked,
       favoriteCount: item?.legacy?.favorite_count,
@@ -193,8 +192,7 @@ const mapTwitterPosts = (posts: any[]) => {
       )(item),
       user: {
         id: item?.core?.user_results?.result?.rest_id,
-        avatar:
-          item?.core?.user_results?.result?.legacy?.profile_image_url_https,
+        avatar: item?.core?.user_results?.result?.legacy?.profile_image_url_https,
         mediaCount: item?.core?.user_results?.result?.legacy?.media_count,
         name: item?.core?.user_results?.result?.legacy?.name,
         screenName: item?.core?.user_results?.result?.legacy?.screen_name,
@@ -212,6 +210,16 @@ const pathToInstructions = R.path<any>([
   'timeline',
   'instructions',
 ]);
+
+function checkTimelineError(body: any, context: string) {
+  if (body?.errors) {
+    const msg = body.errors[0]?.message || 'Twitter API 返回错误';
+    throw new Error(`[${context}] ${msg}`);
+  }
+  if (body?.data?.user?.result?.timeline_v2 === undefined && body?.data?.user?.result?.timeline === undefined) {
+    throw new Error(`[${context}] 无法解析时间线结构，可能 Twitter API 已变更，请尝试更新软件`);
+  }
+}
 
 export async function getUserMedias(
   userId: string,
@@ -231,8 +239,7 @@ export async function getUserMedias(
         verified_phone_label_enabled: false,
         creator_subscriptions_tweet_preview_api_enabled: true,
         responsive_web_graphql_timeline_navigation_enabled: true,
-        responsive_web_graphql_skip_user_profile_image_extensions_enabled:
-          false,
+        responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
         c9s_tweet_anatomy_moderator_badge_enabled: true,
         tweetypie_unmention_optimization_enabled: true,
         responsive_web_edit_tweet_api_enabled: true,
@@ -243,8 +250,7 @@ export async function getUserMedias(
         tweet_awards_web_tipping_enabled: false,
         freedom_of_speech_not_reach_fetch_enabled: true,
         standardized_nudges_misinfo: true,
-        tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled:
-          true,
+        tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
         rweb_video_timestamps_enabled: true,
         longform_notetweets_rich_text_read_enabled: true,
         longform_notetweets_inline_media_enabled: true,
@@ -265,6 +271,7 @@ export async function getUserMedias(
     headers: getCommonHeaders(),
   });
   ensureResponse(resp);
+  checkTimelineError(resp.body, 'UserMedia');
 
   const extractTwitterPosts = (
     pathToInstructions: (data: any) => any,
@@ -364,8 +371,7 @@ export async function getUserTweets(
         verified_phone_label_enabled: false,
         creator_subscriptions_tweet_preview_api_enabled: true,
         responsive_web_graphql_timeline_navigation_enabled: true,
-        responsive_web_graphql_skip_user_profile_image_extensions_enabled:
-          false,
+        responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
         communities_web_enable_tweet_community_results_fetch: true,
         c9s_tweet_anatomy_moderator_badge_enabled: true,
         articles_preview_enabled: false,
@@ -379,10 +385,8 @@ export async function getUserTweets(
         creator_subscriptions_quote_tweet_preview_enabled: false,
         freedom_of_speech_not_reach_fetch_enabled: true,
         standardized_nudges_misinfo: true,
-        tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled:
-          true,
-        tweet_with_visibility_results_prefer_gql_media_interstitial_enabled:
-          false,
+        tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+        tweet_with_visibility_results_prefer_gql_media_interstitial_enabled: false,
         rweb_video_timestamps_enabled: true,
         longform_notetweets_rich_text_read_enabled: true,
         longform_notetweets_inline_media_enabled: true,
@@ -401,6 +405,7 @@ export async function getUserTweets(
     headers: getCommonHeaders(),
   });
   ensureResponse(resp);
+  checkTimelineError(resp.body, 'UserTweets');
 
   const extractTwitterPosts = (
     pathToInstructions: (data: any) => any,
@@ -420,14 +425,10 @@ export async function getUserTweets(
               R.path(['content', 'itemContent', 'tweet_results', 'result']),
             ],
             [
-              R.pathSatisfies(R.startsWith('profile-conversation'), [
-                'entryId',
-              ]),
+              R.pathSatisfies(R.startsWith('profile-conversation'), ['entryId']),
               R.pipe(
                 R.path<any>(['content', 'items']),
-                R.map(
-                  R.path(['item', 'itemContent', 'tweet_results', 'result']),
-                ),
+                R.map(R.path(['item', 'itemContent', 'tweet_results', 'result'])),
               ),
             ],
             [R.T, R.always(undefined)],
@@ -437,24 +438,14 @@ export async function getUserTweets(
         R.filter(
           R.allPass<any>([
             R.isNotNil,
-            // 过滤掉转推
             R.complement(R.hasPath(['legacy', 'retweeted_status_result'])),
-            // 过滤掉无媒体
             R.hasPath(['legacy', 'entities', 'media']),
-            R.pathSatisfies(R.pipe(R.length, R.lte(0)), [
-              'legacy',
-              'entities',
-              'media',
-            ]),
+            R.pathSatisfies(R.pipe(R.length, R.lte(0)), ['legacy', 'entities', 'media']),
           ]),
         ),
       )(instructions);
     };
-    return R.pipe(
-      pathToInstructions,
-      pathToTwitterPostItems,
-      mapTwitterPosts,
-    )(data);
+    return R.pipe(pathToInstructions, pathToTwitterPostItems, mapTwitterPosts)(data);
   };
 
   const extractNextCursor = (
