@@ -65,17 +65,40 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   const {
     currentTab,
     setCurrentTab,
-    downloadTasks,
     creationTasks,
     batchProgress,
+    // ✅ 独立订阅计数，避免因 downloadTasks 数组引用变化触发重渲染
+    downloadingCount,
+    completedCount,
+    erroredCount,
+    tabCounts,
   } = useDownloadStore(
-    useShallow((s) => ({
-      currentTab: s.currentTab,
-      setCurrentTab: s.setCurrentTab,
-      downloadTasks: s.downloadTasks,
-      creationTasks: s.creationTasks,
-      batchProgress: s.batchProgress,
-    })),
+    useShallow((s) => {
+      const downloading = s.downloadTasks.filter((t) =>
+        ['active', 'waiting', 'paused'].includes(t.status),
+      ).length;
+      const completed = s.downloadTasks.filter((t) => t.status === 'complete').length;
+      const errored = s.downloadTasks.filter((t) => t.status === 'error').length;
+
+      // 提前计算好每个 tab 的计数，避免在渲染时遍历
+      const counts: Record<string, number> = {};
+      tabs.forEach((tab) => {
+        counts[tab.name] = s.downloadTasks.filter((t) =>
+          tab.countStatus.includes(t.status),
+        ).length;
+      });
+
+      return {
+        currentTab: s.currentTab,
+        setCurrentTab: s.setCurrentTab,
+        creationTasks: s.creationTasks,
+        batchProgress: s.batchProgress,
+        downloadingCount: downloading,
+        completedCount: completed,
+        erroredCount: errored,
+        tabCounts: counts,
+      };
+    }),
   );
 
   useEffect(() => {
@@ -84,23 +107,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     }
   }, [currentTab, tabs, setCurrentTab]);
 
-  const currentTabChildren = tabs.find(
-    (tab) => tab.name === currentTab,
-  )?.children;
+  const currentTabChildren = tabs.find((tab) => tab.name === currentTab)?.children;
 
   const stats = useMemo(() => {
-    const creating = creationTasks.length;
-    const downloading = downloadTasks.filter((t) =>
-      ['active', 'waiting', 'paused'].includes(t.status),
-    ).length;
-    const completed = downloadTasks.filter(
-      (t) => t.status === 'complete',
-    ).length;
-    const errored = downloadTasks.filter(
-      (t) => t.status === 'error',
-    ).length;
-    return { creating, downloading, completed, errored };
-  }, [creationTasks.length, downloadTasks]);
+    return {
+      creating: creationTasks.length,
+      downloading: downloadingCount,
+      completed: completedCount,
+      errored: erroredCount,
+    };
+  }, [creationTasks.length, downloadingCount, completedCount, erroredCount]);
 
   const activeCreation = useMemo(
     () => creationTasks.find((t) => t.status === 'active'),
@@ -121,9 +137,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     const successColor = '#52c41a';
 
     if (mode === 'batch' && batchProgress) {
-      const p = Math.round(
-        (batchProgress.completed / batchProgress.total) * 100,
-      );
+      const p = Math.round((batchProgress.completed / batchProgress.total) * 100);
       return {
         percent: Math.max(0, Math.min(100, p)),
         strokeColor: hasError ? errorColor : activeColor,
@@ -155,7 +169,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       };
     }
 
-    // ✅ 空闲模式：文字留空，只显示两个绿色 100% 圆环
     const hasErrorIdle = stats.errored > 0;
     return {
       percent: 100,
@@ -166,20 +179,12 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [mode, batchProgress, activeCreation, stats]);
 
-  const phasePercentValue = activeCreation
-    ? phasePercent(activeCreation)
-    : 100;
-  const phaseLabel = activeCreation
-    ? phaseText(activeCreation)
-    : '预检/索引 已完成';
+  const phasePercentValue = activeCreation ? phasePercent(activeCreation) : 100;
+  const phaseLabel = activeCreation ? phaseText(activeCreation) : '预检/索引 已完成';
   const phaseColor = activeCreation ? '#722ed1' : '#52c41a';
-  const phaseStatus = activeCreation
-    ? ('active' as const)
-    : ('normal' as const);
+  const phaseStatus = activeCreation ? ('active' as const) : ('normal' as const);
 
-  // ✅ 空闲时右侧文字区完全不显示
-  const showTextBlock =
-    dashboard.line1 || dashboard.line2;
+  const showTextBlock = dashboard.line1 || dashboard.line2;
 
   return (
     <div className="h-full flex flex-col">
@@ -188,9 +193,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         <ul role="tablist" className="flex gap-2 shrink-0">
           {tabs.map((tab) => {
             const active = tab.name === currentTab;
-            const count = R.count<DownloadTask>((t) =>
-              tab.countStatus.includes(t.status),
-            )(downloadTasks);
+            const count = tabCounts[tab.name] || 0;
             return (
               <li key={tab.name}>
                 <button
@@ -198,7 +201,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                   aria-selected={active}
                   onClick={() => setCurrentTab(tab.name)}
                   className={clsx(
-                    // ✅ 卡片放大：px-5 py-2.5，min-w 72px
                     'relative flex flex-col items-center px-5 py-2.5 rounded-md transition-all border min-w-[72px]',
                     active
                       ? 'bg-white border-blue-200 shadow-sm'
@@ -207,7 +209,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
                 >
                   <span
                     className={clsx(
-                      // ✅ 数字放大：text-2xl
                       'text-2xl font-bold leading-none',
                       active ? 'text-ant-color-primary' : 'text-gray-700',
                     )}
@@ -242,9 +243,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={phaseColor}
               status={phaseStatus}
               format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">
-                  {p}%
-                </span>
+                <span className="text-[10px] font-bold text-gray-700">{p}%</span>
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
@@ -260,9 +259,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={dashboard.strokeColor}
               status={dashboard.progressStatus}
               format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">
-                  {p}%
-                </span>
+                <span className="text-[10px] font-bold text-gray-700">{p}%</span>
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
@@ -271,7 +268,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           </div>
         </div>
 
-        {/* ✅ 右侧文字描述：空闲时不渲染 */}
+        {/* 右侧文字描述 */}
         {showTextBlock ? (
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-800 truncate">
@@ -284,7 +281,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             )}
           </div>
         ) : (
-          // 占位，保持右侧布局对齐
           <div className="flex-1 min-w-0" />
         )}
       </div>

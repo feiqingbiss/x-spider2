@@ -31,6 +31,7 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
   const paramRef = useRef<LoadParam>({ hasMore: true });
   const loadingRef = useRef(false);
   const unmountedRef = useUnmountedRef();
+  const rafRef = useRef<number | null>(null);
 
   const lastResetKeyRef = useRef(resetKey);
 
@@ -59,6 +60,7 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
       if (unmountedRef.current) return;
       if (!paramRef.current.hasMore) return;
 
+      // 使用 requestAnimationFrame 避免布局抖动
       requestAnimationFrame(() => {
         if (unmountedRef.current) return;
         if (loadingRef.current) return;
@@ -89,10 +91,26 @@ export const InfiniteScroll: React.FC<InfiniteScrollProps> = ({
     checkAndLoad(0);
   }, [resetKey, enabled, checkAndLoad]);
 
+  // ✅ 使用 requestAnimationFrame 节流 onScroll，防止高频重排
   const onScroll = useCallback(() => {
     if (!enabled) return;
-    checkAndLoad(0);
+    if (rafRef.current !== null) return;
+
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      checkAndLoad(0);
+    });
   }, [enabled, checkAndLoad]);
+
+  // 组件卸载时取消挂起的 rAF
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div {...props} ref={ref} onScroll={onScroll}>
