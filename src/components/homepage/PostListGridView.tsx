@@ -17,14 +17,14 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 // ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
 
-// ✅ 纯前端解耦的缩略图组件，仅负责加载失败时的优雅降级
+// ✅ 缩略图组件：优先走后端代理下载并缓存，失败时显示占位图
 const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
   url,
   mediaId,
 }) => {
   const [hasError, setHasError] = useState(false);
 
-  // 如果 API 没有返回 url，用 mediaId 拼接官方备用地址
+  // 如果 API 没返回 url，用 mediaId 拼接官方备用地址
   let finalUrl = url;
   if (!finalUrl && mediaId) {
     finalUrl = `https://pbs.twimg.com/media/${mediaId}?format=jpg&name=small`;
@@ -39,10 +39,20 @@ const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
     );
   }
 
+  // 确保是预览小图而非原图
+  const previewUrl = finalUrl.includes('?')
+    ? finalUrl
+    : `${finalUrl}?format=jpg&name=small`;
+
+  // 通过 Tauri 自定义协议 xsimg:// 走后端代理下载图片
+  const isWindows = navigator.userAgent.includes('Windows');
+  const protocolBase = isWindows ? 'http://xsimg.localhost' : 'xsimg://localhost';
+  const src = `${protocolBase}/?url=${encodeURIComponent(previewUrl)}`;
+
   return (
     <img
       alt="推文图片"
-      src={finalUrl.includes('?') ? finalUrl : `${finalUrl}?format=jpg&name=small`}
+      src={src}
       loading="lazy"
       className="object-cover w-full h-full transform transition-transform group-hover:scale-105"
       onError={() => setHasError(true)}
@@ -186,7 +196,7 @@ export const PostListGridView: React.FC = () => {
           return (
             <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
-                {/* ✅ 纯前端兜底缩略图 */}
+                {/* ✅ 走后端代理加载缩略图 */}
                 <MediaThumbnail url={media.url} mediaId={media.id} />
 
                 {media.type === MediaType.Video && (
