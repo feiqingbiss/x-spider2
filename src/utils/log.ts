@@ -6,6 +6,9 @@ import { path, fs } from '@tauri-apps/api';
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
 
+// ✅ 日志文件名（模块加载时固定，确保所有日志写入同一个文件）
+const LOG_FILE_NAME = `${dayjs().format('YYYY-MM-DD HHmmss')}.log`;
+
 // ✅ 日志写入队列，解决并发写文件冲突
 const pendingLines: string[] = [];
 let isWriting = false;
@@ -21,8 +24,7 @@ async function flushLogFile() {
     if (!(await fs.exists(logDir))) {
       await fs.createDir(logDir, { recursive: true });
     }
-    const fileName = `${dayjs().format('YYYY-MM-DD HHmmss')}.log`;
-    const logFilePath = await path.join(logDir, fileName);
+    const logFilePath = await path.join(logDir, LOG_FILE_NAME);
 
     await fs.writeTextFile(logFilePath, linesToWrite.join('\n') + '\n', {
       append: true,
@@ -50,8 +52,6 @@ function scheduleFlush() {
 }
 
 export class Logger implements ILogger {
-  #now = dayjs();
-
   info(...messages: any[]) {
     this.#log('INFO', DEFAULT_CATEGORY, ...messages);
   }
