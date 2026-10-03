@@ -119,10 +119,15 @@ export async function getUser(screenName: string): Promise<TwitterUser> {
 
 const mapTwitterPosts = (posts: any[]) => {
   const mapTwitterMedias = (medias: any[]) => {
+    // ✅ 修复：如果 media_url_https 为空，使用 id_str 拼接备用图片地址
     const toTwitterMediaBase: (v: any) => TwitterMediaBase = (v: any) => {
+      let finalUrl = v?.media_url_https;
+      if (!finalUrl && v?.id_str) {
+        finalUrl = `https://pbs.twimg.com/media/${v.id_str}?format=jpg&name=small`;
+      }
       return {
         id: v?.id_str,
-        url: v?.media_url_https,
+        url: finalUrl,
         width: v?.original_info?.width,
         height: v?.original_info?.height,
       };

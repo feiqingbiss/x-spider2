@@ -17,11 +17,20 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 // ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
 
-// ✅ 新增：独立缩略图组件，处理缺失 URL 和加载失败的情况
-const MediaThumbnail: React.FC<{ url?: string }> = ({ url }) => {
+// ✅ 独立的缩略图组件，处理缺失 URL 和加载失败的情况
+const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
+  url,
+  mediaId,
+}) => {
   const [hasError, setHasError] = useState(false);
 
-  if (!url || hasError) {
+  // ✅ 双重兜底：如果 url 为空，尝试用 mediaId 拼接
+  let finalUrl = url;
+  if (!finalUrl && mediaId) {
+    finalUrl = `https://pbs.twimg.com/media/${mediaId}?format=jpg&name=small`;
+  }
+
+  if (!finalUrl || hasError) {
     return (
       <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-gray-400 text-xs">
         <PictureOutlined className="text-2xl mb-1 opacity-50" />
@@ -33,7 +42,7 @@ const MediaThumbnail: React.FC<{ url?: string }> = ({ url }) => {
   return (
     <img
       alt="推文图片"
-      src={`${url}?format=jpg&name=small`}
+      src={finalUrl.includes('?') ? finalUrl : `${finalUrl}?format=jpg&name=small`}
       loading="lazy"
       className="object-cover w-full h-full transform transition-transform group-hover:scale-105"
       onError={() => setHasError(true)}
@@ -177,8 +186,8 @@ export const PostListGridView: React.FC = () => {
           return (
             <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
-                {/* ✅ 替换为 MediaThumbnail，自动处理空 URL 和加载失败 */}
-                <MediaThumbnail url={media.url} />
+                {/* ✅ 传入 mediaId 作为兜底 */}
+                <MediaThumbnail url={media.url} mediaId={media.id} />
 
                 {media.type === MediaType.Video && (
                   <span className="block absolute right-2 bottom-2 text-white bg-[rgba(0,0,0,0.6)] rounded-sm px-[0.3rem] text-sm pointer-events-none">
