@@ -40,9 +40,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: 'pnpm'
 
       - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript check
         run: pnpm typeCheck

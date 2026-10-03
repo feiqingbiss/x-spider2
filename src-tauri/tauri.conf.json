@@ -74,12 +74,6 @@
       "externalBin": [
         "binaries/aria2c"
       ],
-      "windows": {
-        "nsis": {
-          "installerHooks": "nsis/hooks.nsh"
-        }
-      }
-    },
     "security": {
       "csp": null
     },
