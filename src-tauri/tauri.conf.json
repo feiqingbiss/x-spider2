@@ -73,7 +73,8 @@
       ],
       "externalBin": [
         "binaries/aria2c"
-      ],
+      ]
+    },
     "security": {
       "csp": null
     },
