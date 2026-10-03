@@ -1,9 +1,9 @@
 /* eslint-disable react/prop-types */
-import { LoadingOutlined } from '@ant-design/icons';
+import { LoadingOutlined, PictureOutlined } from '@ant-design/icons';
 import { App } from 'antd';
 import dayjs from 'dayjs';
 import * as R from 'ramda';
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import MediaType from '../../enums/MediaType';
 import { TwitterMedia } from '../../interfaces/TwitterMedia';
@@ -16,6 +16,30 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 
 // ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
+
+// ✅ 新增：独立缩略图组件，处理缺失 URL 和加载失败的情况
+const MediaThumbnail: React.FC<{ url?: string }> = ({ url }) => {
+  const [hasError, setHasError] = useState(false);
+
+  if (!url || hasError) {
+    return (
+      <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-gray-400 text-xs">
+        <PictureOutlined className="text-2xl mb-1 opacity-50" />
+        <span>预览不可用</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      alt="推文图片"
+      src={`${url}?format=jpg&name=small`}
+      loading="lazy"
+      className="object-cover w-full h-full transform transition-transform group-hover:scale-105"
+      onError={() => setHasError(true)}
+    />
+  );
+};
 
 export const PostListGridView: React.FC = () => {
   const { message } = App.useApp();
@@ -153,14 +177,11 @@ export const PostListGridView: React.FC = () => {
           return (
             <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
-                <img
-                  alt="推文图片"
-                  src={`${media.url}?format=jpg&name=small`}
-                  loading="lazy"
-                  className="object-cover w-full h-full transform transition-transform group-hover:scale-105"
-                />
+                {/* ✅ 替换为 MediaThumbnail，自动处理空 URL 和加载失败 */}
+                <MediaThumbnail url={media.url} />
+
                 {media.type === MediaType.Video && (
-                  <span className="block absolute right-2 bottom-2 text-white bg-[rgba(0,0,0,0.6)] rounded-sm px-[0.3rem] text-sm">
+                  <span className="block absolute right-2 bottom-2 text-white bg-[rgba(0,0,0,0.6)] rounded-sm px-[0.3rem] text-sm pointer-events-none">
                     <span className="sr-only">视频时长：</span>
                     {media.videoInfo?.duration
                       ? dayjs.duration(media.videoInfo.duration).format('mm:ss')
@@ -168,7 +189,7 @@ export const PostListGridView: React.FC = () => {
                   </span>
                 )}
                 {media.type === MediaType.Gif && (
-                  <span className="block absolute right-2 bottom-2 text-white bg-[rgba(0,0,0,0.6)] rounded-sm px-[0.3rem] text-sm">
+                  <span className="block absolute right-2 bottom-2 text-white bg-[rgba(0,0,0,0.6)] rounded-sm px-[0.3rem] text-sm pointer-events-none">
                     GIF
                   </span>
                 )}
