@@ -39,7 +39,6 @@ function isRateLimitError(msg: string): boolean {
   );
 }
 
-// ✅ 新增：日志脱敏
 const SENSITIVE_HEADER_KEYS = new Set([
   'cookie',
   'set-cookie',
@@ -48,7 +47,13 @@ const SENSITIVE_HEADER_KEYS = new Set([
   'proxy-authorization',
 ]);
 
-const SENSITIVE_QUERY_KEYWORDS = ['token', 'secret', 'auth', 'password', 'key'];
+const SENSITIVE_QUERY_KEYWORDS = [
+  'token',
+  'secret',
+  'auth',
+  'password',
+  'key',
+];
 
 function sanitizeHeaders(
   headers: Record<string, string>,
@@ -103,7 +108,8 @@ export async function request(options: RequestOptions) {
         url.href,
         R.defaultTo('', options.body),
         settings.proxy.enable,
-        settings.proxy.useSystem ? '' : settings.proxy.url,
+        // ✅ 直接用用户填的代理地址，不再区分系统/手动
+        settings.proxy.url,
         R.defaultTo({}, options.headers),
         options.responseType,
       );
@@ -152,7 +158,6 @@ async function requestInternal(
   const startTs = Date.now();
   const reqId = reqIdGlobal++;
 
-  // ✅ 日志脱敏
   log.info(`REQ_${reqId}`, method, sanitizeUrl(url), {
     body,
     enableProxy,
@@ -175,15 +180,4 @@ async function requestInternal(
   log.info(`RES_${reqId}(+${endTs}ms)`, res.status, sanitizeUrl(url), res);
 
   return res;
-}
-
-export async function getSystemProxy(): Promise<string> {
-  const map: Record<string, string> = await invoke(
-    'network_get_system_proxy_url',
-  );
-  const value = map.https || map.http;
-  if (value) {
-    return `http://${value}`;
-  }
-  return '';
 }

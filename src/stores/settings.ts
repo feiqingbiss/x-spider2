@@ -12,9 +12,7 @@ import { createTauriFileStorage } from './persist/tauri-file-storage';
 export interface SettingsStore extends Settings {
   update: (settings: Settings) => void;
   updateOne: <T>(name: string, key: string, value: T) => Promise<void>;
-  // 新增：打开指定的文件夹
   openFolder: (folderPath: string) => Promise<void>;
-  // 新增：打开 App 数据目录（查看 txt 文件所在处）
   openAppDataFolder: () => Promise<void>;
 }
 
@@ -31,8 +29,7 @@ export const useSettingsStore = create(
         store.update(newSettings);
         log.info('UpdateSettings', `${name}.${key}`, value);
       },
-      
-      // 辅助方法：使用系统默认管理器打开文件夹
+
       openFolder: async (folderPath) => {
         try {
           await shell.open(folderPath);
@@ -41,7 +38,6 @@ export const useSettingsStore = create(
         }
       },
 
-      // 辅助方法：打开包含 search-user-name.txt 的数据目录
       openAppDataFolder: async () => {
         try {
           const appDataDir = await path.appLocalDataDir();
@@ -49,7 +45,7 @@ export const useSettingsStore = create(
         } catch (err) {
           log.error('无法打开数据目录:', err);
         }
-      }
+      },
     }),
     {
       name: 'settings',
@@ -59,7 +55,6 @@ export const useSettingsStore = create(
         return async (state, error) => {
           if (error) return;
 
-          // 如果没有默认保存路径，设置为系统 Downloads 文件夹所在地
           if (!state?.download.saveDirBase) {
             const dir = await path.downloadDir();
             useSettingsStore.setState({
@@ -71,8 +66,15 @@ export const useSettingsStore = create(
         };
       },
       migrate(state: any, version) {
+        // v1 → v2：savePath 改名为 saveDirBase
         if (version === 1) {
           delete state.download.savePath;
+        }
+        // v2 → v3：删除 proxy.useSystem
+        if (version < 3) {
+          if (state.proxy) {
+            delete state.proxy.useSystem;
+          }
         }
         return state;
       },

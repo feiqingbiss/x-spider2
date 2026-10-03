@@ -34,4 +34,23 @@ export interface Settings_V2 {
   };
 }
 
-export type Settings = Settings_V2;
+// ✅ 新增 V3：去掉 useSystem
+export interface Settings_V3 {
+  proxy: {
+    enable: boolean;
+    url: string;
+  };
+  download: {
+    saveDirBase: string;
+    dirTemplate: string;
+    fileNameTemplate: string;
+    sameFileSkip: boolean;
+  };
+  app: {
+    autoCheckUpdate: boolean;
+    acceptPrerelease: boolean;
+    writeLogs: boolean;
+  };
+}
+
+export type Settings = Settings_V3;

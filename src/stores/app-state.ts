@@ -18,8 +18,6 @@ export interface AppStateStore {
   setLatestVersion: (version: string) => void;
   setLastCheckUpdateTime: (time: number) => void;
   setLatestUrl: (url: string) => void;
-  systemProxyUrl: string;
-  setSystemProxyUrl: (url: string) => void;
   // 强制完整遍历开关
   forceFullScan: boolean;
   setForceFullScan: (v: boolean) => void;
@@ -107,12 +105,27 @@ export const useAppStateStore = create(
       setLastCheckUpdateTime: (time) => set({ lastCheckUpdateTime: time }),
       setLatestVersion: (version) => set({ latestVersion: version }),
       setLatestUrl: (url) => set({ latestUrl: url }),
-      systemProxyUrl: '',
-      setSystemProxyUrl: (url) => set({ systemProxyUrl: url }),
       // 强制完整遍历：默认 false
       forceFullScan: false,
       setForceFullScan: (v) => set({ forceFullScan: v }),
     }),
-    { name: 'app-state', storage: createTauriFileStorage(), version: 1 },
+    {
+      name: 'app-state',
+      storage: createTauriFileStorage(),
+      // ✅ 版本号 1 → 2
+      version: 2,
+      migrate(state: any, version) {
+        // v1 → v2：删除 systemProxyUrl
+        if (version < 2) {
+          if (state) {
+            delete state.systemProxyUrl;
+            // 有些版本的残留字段也一起清掉
+            delete state.setSystemProxyUrl;
+            delete state.taskCount;
+          }
+        }
+        return state;
+      },
+    },
   ),
 );

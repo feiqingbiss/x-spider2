@@ -4,7 +4,6 @@ export const DEFAULT_SETTINGS: Settings = {
   proxy: {
     enable: true,
     url: 'http://127.0.0.1:7890',
-    useSystem: true,
   },
   download: {
     saveDirBase: '',
@@ -20,4 +19,5 @@ export const DEFAULT_SETTINGS: Settings = {
   },
 };
 
-export const CURRENT_SETTINGS_VERSION = 2;
+// ✅ 版本号 2 → 3
+export const CURRENT_SETTINGS_VERSION = 3;

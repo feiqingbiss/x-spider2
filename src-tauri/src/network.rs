@@ -35,15 +35,10 @@ pub async fn network_fetch(
   let client = {
     let mut b = reqwest::Client::builder();
 
-    // ✅ 优化：删除了 danger_accept_invalid_certs(true)。
-    // 使用 rustls-tls 后，证书验证不再依赖 Windows Schannel，无需再跳过校验。
-
-    // Auto set proxy settings
     if enable_proxy {
       if proxy_url.is_empty() {
-        // Use system proxy, do nothing
+        // 没填代理地址，等同直连
       } else {
-        // Use custom proxy url
         let proxy_http = reqwest::Proxy::http(proxy_url.clone())
           .map_err(|_| "Failed to set proxy url".to_string())?;
         let proxy_https = reqwest::Proxy::https(proxy_url.clone())
@@ -120,14 +115,4 @@ pub async fn network_fetch(
     body,
     headers: resp_headers,
   })
-}
-
-#[tauri::command]
-pub async fn network_get_system_proxy_url() -> Result<HashMap<String, String>, ()> {
-  // 说明：当前版本未实现系统代理的读取，返回空 Map。
-  // 前端在 proxy.useSystem = true 时会把空字符串传给 reqwest，
-  // reqwest 会走它自己的环境变量（HTTPS_PROXY 等）逻辑。
-  // 如果将来要实现真正的系统代理读取，可以在这里接入平台 API。
-  let mapped_proxies: HashMap<String, String> = HashMap::new();
-  Ok(mapped_proxies)
 }
