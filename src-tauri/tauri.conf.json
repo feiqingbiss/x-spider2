@@ -12,22 +12,47 @@
   "tauri": {
     "allowlist": {
       "all": false,
-      "app": { "all": true },
-      "clipboard": { "all": true },
-      "dialog": { "all": true },
-      "notification": { "all": true },
-      "os": { "all": true },
-      "path": { "all": true },
+      "app": {
+        "all": true
+      },
+      "clipboard": {
+        "all": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "notification": {
+        "all": true
+      },
+      "os": {
+        "all": true
+      },
+      "path": {
+        "all": true
+      },
       "shell": {
         "all": true,
         "open": ".*",
         "scope": [
-          { "name": "explorer", "cmd": "explorer", "args": true },
-          { "name": "binaries/aria2c", "sidecar": true, "args": true }
+          {
+            "name": "explorer",
+            "cmd": "explorer",
+            "args": true
+          },
+          {
+            "name": "binaries/aria2c",
+            "sidecar": true,
+            "args": true
+          }
         ]
       },
-      "window": { "all": true },
-      "fs": { "all": true, "scope": ["**"] },
+      "window": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": ["**"]
+      },
       "protocol": {
         "asset": true,
         "assetScope": ["**"]
@@ -48,7 +73,12 @@
       ],
       "externalBin": [
         "binaries/aria2c"
-      ]
+      ],
+      "windows": {
+        "nsis": {
+          "installerHooks": "nsis/hooks.nsh"
+        }
+      }
     },
     "security": {
       "csp": null
