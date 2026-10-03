@@ -4,11 +4,17 @@ import { clipboard } from '@tauri-apps/api';
 import { Button, Tooltip, App } from 'antd';
 import { REPLACER_MAP } from '../../constants/file-name-template';
 
-export const VariablePicker: React.FC = () => {
+export interface VariablePickerProps {
+  id?: string;
+}
+
+export const VariablePicker: React.FC<VariablePickerProps> = ({
+  id = 'file-name-template-input-variables',
+}) => {
   const { message } = App.useApp();
   return (
     <section
-      id="file-name-template-input-variables"
+      id={id}
       aria-label="可用变量"
       className="text-xs bg-gray-100 rounded-sm p-3 text-gray-800 mb-3"
     >

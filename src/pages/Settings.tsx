@@ -113,13 +113,25 @@ export const Settings: React.FC = () => {
         >
           <SavePathSelector required />
         </Item>
+
+        {/* ✅ 文件夹模板在上 */}
         <Item
           label="文件夹模板"
           settingKey="dirTemplate"
-          description="自定义文件夹命名规则"
+          description="自定义文件夹命名规则。留空表示所有文件都保存在保存路径下"
         >
           <FileNameTemplateInput />
         </Item>
+
+        {/* ✅ 文件名模板在下 */}
+        <Item
+          label="文件名模板"
+          settingKey="fileNameTemplate"
+          description="自定义文件命名规则，支持 %POST_ID%、%MEDIA_INDEX%、%EXT% 等变量"
+        >
+          <FileNameTemplateInput />
+        </Item>
+
         <Item
           settingKey="sameFileSkip"
           label="跳过相同文件"
