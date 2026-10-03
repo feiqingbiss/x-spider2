@@ -35,7 +35,9 @@
     },
     "bundle": {
       "active": true,
-      "targets": ["nsis"],
+      "targets": [
+        "nsis"
+      ],
       "identifier": "x-spider",
       "icon": [
         "icons/32x32.png",
@@ -44,12 +46,9 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "externalBin": ["binaries/aria2c"],
-      "windows": {
-        "nsis": {
-          "installerHooks": "nsis/hooks.nsh"
-        }
-      }
+      "externalBin": [
+        "binaries/aria2c"
+      ]
     },
     "security": {
       "csp": null
