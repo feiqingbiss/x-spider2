@@ -151,9 +151,9 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     if (changed) set({ downloadTasks: next });
   },
   batchCreateDownloadTask: async (paramsList) => {
+    // 1. 本地预准备所有任务（CPU 操作，速度快）
     const tasks: DownloadTask[] = [];
-    const thumbTasks: Array<{ url: string; dir: string; fileName: string }> =
-      [];
+    const thumbTasks: Array<{ url: string; dir: string; fileName: string }> = [];
 
     for (const p of paramsList) {
       try {
@@ -166,62 +166,81 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }
     if (!tasks.length) return;
 
+    // 2. 批量打包发送 addUri 请求（一次 IPC 搞定）
+    const addPayloads = tasks.map((t) => ({
+      methodName: 'aria2.addUri',
+      params: [[t.downloadUrl], buildAddUriOptions(t.dir, t.fileName)],
+    }));
+
+    const results = await aria2.batchInvoke(addPayloads);
+
     const goodTasks: DownloadTask[] = [];
     const skipTasks: DownloadTask[] = [];
+    const goodGids: string[] = [];
 
-    for (const t of tasks) {
-      try {
-        const gid = await aria2.invoke(
-          'aria2.addUri',
-          [t.downloadUrl],
-          buildAddUriOptions(t.dir, t.fileName),
-        );
-        t.gid = gid;
-        goodTasks.push(t);
-      } catch (err: any) {
-        const errMsg = err?.message || String(err);
-        if (isFileAlreadyExistsError(errMsg)) {
-          logFn('info', `文件已存在，跳过：${t.fileName}`);
-          t.gid = `skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          t.status = AriaStatus.Complete;
-          t.completeSize = 1;
-          t.totalSize = 1;
-          t.error = '';
-          t.updatedAt = Date.now();
-          skipTasks.push(t);
+    // 3. 解析返回结果
+    results.forEach((result: any, index: number) => {
+      const task = tasks[index];
+      if (Array.isArray(result) && result.length > 0 && !result[0].faultCode) {
+        // 成功：result 形如 [gid]
+        const gid = result[0] as string;
+        task.gid = gid;
+        goodTasks.push(task);
+        goodGids.push(gid);
+      } else if (result?.faultCode || result?.faultString) {
+        // 失败
+        const errMsg = result.faultString || '未知错误';
+        if (isFileAlreadyExistsError(errMsg, result.faultCode)) {
+          logFn('info', `文件已存在，跳过：${task.fileName}`);
+          task.gid = `skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          task.status = AriaStatus.Complete;
+          task.completeSize = 1;
+          task.totalSize = 1;
+          task.error = '';
+          task.updatedAt = Date.now();
+          skipTasks.push(task);
         } else {
           logFn('error', `添加下载失败: ${errMsg}`);
         }
+      } else {
+        logFn('error', `未知的 addUri 返回格式: ${JSON.stringify(result)}`);
+      }
+    });
+
+    // 4. 批量查询刚创建的任务状态
+    if (goodGids.length > 0) {
+      try {
+        const statusMap = await aria2.tellStatus(goodGids);
+        goodTasks.forEach((t) => {
+          if (statusMap[t.gid]) {
+            t.status = statusMap[t.gid].status;
+          }
+        });
+      } catch (e) {
+        logFn('warn', '批量获取初始状态失败', e);
       }
     }
 
-    if (goodTasks.length > 0) {
-      const statusMap = await aria2.tellStatus(goodTasks.map((t) => t.gid));
-      goodTasks.forEach((t) => {
-        t.status = statusMap[t.gid].status;
+    // 5. 批量发送视频封面图任务（不阻塞主流程）
+    if (thumbTasks.length) {
+      const thumbPayloads = thumbTasks.map((tt) => ({
+        methodName: 'aria2.addUri',
+        params: [[tt.url], buildAddUriOptions(tt.dir, tt.fileName)],
+      }));
+      aria2.batchInvoke(thumbPayloads).catch((e) => {
+        const msg = e?.message || String(e);
+        if (!isFileAlreadyExistsError(msg)) {
+          logFn('warn', `封面图批量下载任务发送失败: ${msg}`);
+        }
       });
     }
 
-    if (thumbTasks.length) {
-      for (const tt of thumbTasks) {
-        aria2
-          .invoke(
-            'aria2.addUri',
-            [tt.url],
-            buildAddUriOptions(tt.dir, tt.fileName),
-          )
-          .catch((e) => {
-            const msg = e?.message || String(e);
-            if (!isFileAlreadyExistsError(msg)) {
-              logFn('warn', `封面图下载任务发送失败: ${msg}`);
-            }
-          });
-      }
+    // 6. 更新状态
+    if (goodTasks.length > 0 || skipTasks.length > 0) {
+      set({
+        downloadTasks: get().downloadTasks.concat(goodTasks).concat(skipTasks),
+      });
     }
-
-    set({
-      downloadTasks: get().downloadTasks.concat(goodTasks).concat(skipTasks),
-    });
   },
   pauseDownloadTask: async (gid) => {
     await aria2.invoke('aria2.pause', gid);

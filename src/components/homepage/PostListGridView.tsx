@@ -14,6 +14,9 @@ import { buildPostUrl } from '../../twitter/url';
 import { InfiniteScroll } from '../InfiniteScroll';
 import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 
+// ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
+const MAX_RENDER_MEDIA = 500;
+
 export const PostListGridView: React.FC = () => {
   const { message } = App.useApp();
   const { userInfo, postList } = useHomepageStore(
@@ -38,7 +41,7 @@ export const PostListGridView: React.FC = () => {
     }
   }, [userId, loadPostList]);
 
-  const mediaList = useMemo<(TwitterMedia & { postId: string })[]>(
+  const fullMediaList = useMemo<(TwitterMedia & { postId: string })[]>(
     () =>
       R.pipe(
         R.map<TwitterPost, (TwitterMedia & { postId: string })[]>((postItem) =>
@@ -60,8 +63,18 @@ export const PostListGridView: React.FC = () => {
     [postList.list],
   );
 
+  // ✅ 限制渲染数量，避免 DOM 爆炸
+  const mediaList = useMemo(() => {
+    return fullMediaList.slice(0, MAX_RENDER_MEDIA);
+  }, [fullMediaList]);
+
+  const isMediaTruncated = fullMediaList.length > MAX_RENDER_MEDIA;
+
   // ✅ 只负责"加载更多"，不再做首次加载
   const loadMore = useCallback(async () => {
+    // 如果已经达到渲染上限，不再加载更多（避免内存暴涨）
+    if (isMediaTruncated) return;
+
     const state = useHomepageStore.getState();
     if (!state.postList.cursor) return;
     if (state.postList.loading) return;
@@ -70,15 +83,18 @@ export const PostListGridView: React.FC = () => {
     } catch (err: any) {
       message.error(err.message);
     }
-  }, [message]);
+  }, [message, isMediaTruncated]);
 
   const requestFn = useCallback(async () => {
+    if (isMediaTruncated) {
+      return { hasMore: false };
+    }
     await loadMore();
     const state = useHomepageStore.getState();
     return {
       hasMore: !!state.postList.cursor && !state.postList.loading,
     };
-  }, [loadMore]);
+  }, [loadMore, isMediaTruncated]);
 
   // ✅ 只有首次数据就绪后，才让 InfiniteScroll 接管滚动加载
   const readyForInfiniteScroll = !!postList.list;
@@ -93,10 +109,7 @@ export const PostListGridView: React.FC = () => {
     >
       {postList.loading && !postList.list ? (
         <div role="status">
-          <LoadingOutlined
-            className="text-ant-color-primary mr-2"
-            aria-hidden
-          />
+          <LoadingOutlined className="text-ant-color-primary mr-2" aria-hidden />
           加载图片列表中...
         </div>
       ) : (
@@ -106,8 +119,7 @@ export const PostListGridView: React.FC = () => {
       )}
       <ul className="grid grid-cols-[repeat(auto-fill,minmax(12rem,1fr))] gap-2">
         {mediaList.map((media) => {
-          const actionOpen: GridViewItemAction | undefined = userInfo.data
-            ?.screenName
+          const actionOpen: GridViewItemAction | undefined = userInfo.data?.screenName
             ? {
                 name: '打开推文',
                 href: buildPostUrl(userInfo.data.screenName, media.postId),
@@ -115,14 +127,9 @@ export const PostListGridView: React.FC = () => {
             : undefined;
 
           async function commonDownload() {
-            const post = postList.list!.find(
-              (post) => post.id === media.postId,
-            )!;
+            const post = postList.list!.find((post) => post.id === media.postId)!;
             try {
-              await createDownloadTask({
-                post,
-                media,
-              });
+              await createDownloadTask({ post, media });
               message.success('已添加到下载队列');
             } catch (err: any) {
               window.log.error(err);
@@ -134,23 +141,17 @@ export const PostListGridView: React.FC = () => {
             name: '下载图片',
             onClick: commonDownload,
           };
-
           const actionDownloadVideo: GridViewItemAction = {
             name: '下载视频',
             onClick: commonDownload,
           };
-
           const actionDownloadGif: GridViewItemAction = {
             name: '下载 GIF（视频）',
             onClick: commonDownload,
           };
 
           return (
-            <li
-              tabIndex={0}
-              key={media.id}
-              className="relative h-[12rem] overflow-hidden bg-white group"
-            >
+            <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
                 <img
                   alt="推文图片"
@@ -174,18 +175,9 @@ export const PostListGridView: React.FC = () => {
                 <div className="absolute top-0 left-0 w-full h-full bg-[rgba(0,0,0,0.7)] transition-opacity opacity-0 group-hover:opacity-100 has-[:focus]:opacity-100">
                   <GridViewItemActions
                     actions={R.cond([
-                      [
-                        R.equals(MediaType.Photo),
-                        R.always([actionOpen, actionDownloadImage]),
-                      ],
-                      [
-                        R.equals(MediaType.Video),
-                        R.always([actionOpen, actionDownloadVideo]),
-                      ],
-                      [
-                        R.equals(MediaType.Gif),
-                        R.always([actionOpen, actionDownloadGif]),
-                      ],
+                      [R.equals(MediaType.Photo), R.always([actionOpen, actionDownloadImage])],
+                      [R.equals(MediaType.Video), R.always([actionOpen, actionDownloadVideo])],
+                      [R.equals(MediaType.Gif), R.always([actionOpen, actionDownloadGif])],
                       [R.T, R.always([])],
                     ])(media.type).filter(R.isNotNil)}
                   />
@@ -194,24 +186,25 @@ export const PostListGridView: React.FC = () => {
             </li>
           );
         })}
-        {postList.loading && mediaList.length > 0 && (
-          <li
-            className="h-[15rem] flex items-center justify-center bg-white"
-            tabIndex={0}
-          >
-            <LoadingOutlined
-              className="text-6xl text-ant-color-primary"
-              aria-hidden
-            />
+        {postList.loading && mediaList.length > 0 && !isMediaTruncated && (
+          <li className="h-[15rem] flex items-center justify-center bg-white" tabIndex={0}>
+            <LoadingOutlined className="text-6xl text-ant-color-primary" aria-hidden />
             <span className="sr-only">加载更多图片中</span>
           </li>
         )}
       </ul>
-      {!postList.loading && userInfo.data && !postList.cursor && (
-        <div
-          className="mt-4 text-sm text-ant-color-text-secondary text-center"
-          role="alert"
-        >
+
+      {/* ✅ 达到渲染上限时的提示 */}
+      {isMediaTruncated && (
+        <div className="mt-4 text-sm text-center text-orange-500 font-bold" role="alert">
+          为保证流畅度，仅渲染前 {MAX_RENDER_MEDIA} 个媒体（共 {fullMediaList.length} 个）。
+          <br />
+          请先下载或清理已展示媒体，后续版本将支持完整虚拟滚动。
+        </div>
+      )}
+
+      {!postList.loading && userInfo.data && !postList.cursor && !isMediaTruncated && (
+        <div className="mt-4 text-sm text-ant-color-text-secondary text-center" role="alert">
           列表没有更多数据了
         </div>
       )}

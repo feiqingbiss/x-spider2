@@ -6,10 +6,51 @@ import { path, fs } from '@tauri-apps/api';
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
 
+// ✅ 日志写入队列，解决并发写文件冲突
+const pendingLines: string[] = [];
+let isWriting = false;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flushLogFile() {
+  if (isWriting || pendingLines.length === 0) return;
+  isWriting = true;
+
+  const linesToWrite = pendingLines.splice(0);
+  try {
+    const logDir = await path.appLogDir();
+    if (!(await fs.exists(logDir))) {
+      await fs.createDir(logDir, { recursive: true });
+    }
+    const fileName = `${dayjs().format('YYYY-MM-DD HHmmss')}.log`;
+    const logFilePath = await path.join(logDir, fileName);
+
+    await fs.writeTextFile(logFilePath, linesToWrite.join('\n') + '\n', {
+      append: true,
+    });
+  } catch (err) {
+    console.error('Log file write error', err);
+  } finally {
+    isWriting = false;
+    // 如果写入期间又有新的日志，继续调度
+    if (pendingLines.length > 0 && flushTimer === null) {
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushLogFile();
+      }, FLUSH_INTERVAL_MS);
+    }
+  }
+}
+
+function scheduleFlush() {
+  if (flushTimer !== null || isWriting) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushLogFile();
+  }, FLUSH_INTERVAL_MS);
+}
+
 export class Logger implements ILogger {
   #now = dayjs();
-  #logFileBuffers: string[] = [];
-  #logFileTimeoutId: number | undefined;
 
   info(...messages: any[]) {
     this.#log('INFO', DEFAULT_CATEGORY, ...messages);
@@ -44,17 +85,6 @@ export class Logger implements ILogger {
     };
   }
 
-  async #getLogFilePath() {
-    const fileName = `${this.#now.format('YYYY-MM-DD HHmmss')}.log`;
-    const logDir = await path.appLogDir();
-
-    if (!(await fs.exists(logDir))) {
-      await fs.createDir(logDir, { recursive: true });
-    }
-
-    return await path.join(logDir, fileName);
-  }
-
   #log(level: string, category: string, ...messages: any[]) {
     try {
       const time = dayjs();
@@ -87,58 +117,21 @@ export class Logger implements ILogger {
         }
       })
       .join(' ')}`;
-    this.#logFileBuffers.push(msg);
 
-    if (this.#logFileTimeoutId !== undefined) return;
-
-    this.#logFileTimeoutId = window.setTimeout(async () => {
-      this.#logFileTimeoutId = undefined;
-      const buffers = this.#logFileBuffers.slice();
-      this.#logFileBuffers.length = 0;
-      if (buffers.length === 0) return;
-      try {
-        await fs.writeTextFile(
-          await this.#getLogFilePath(),
-          buffers.join('\n') + '\n',
-          { append: true },
-        );
-      } catch (err) {
-        console.error('Log file write error', err);
-      }
-    }, FLUSH_INTERVAL_MS);
+    // ✅ 推入队列，由 flushLogFile 串行写入，避免并发冲突
+    pendingLines.push(msg);
+    scheduleFlush();
   }
 
-  #logConsole(
-    level: string,
-    time: Dayjs,
-    category: string,
-    ...messages: any[]
-  ) {
+  #logConsole(level: string, time: Dayjs, category: string, ...messages: any[]) {
     let categoryColor = '#000000';
-
     if (category !== DEFAULT_CATEGORY) {
-      const colorList = [
-        '#f5222d',
-        '#fa541c',
-        '#fa8c16',
-        '#faad14',
-        '#d4b106',
-        '#a0d911',
-        '#52c41a',
-        '#13c2c2',
-        '#1677ff',
-        '#2f54eb',
-        '#722ed1',
-        '#eb2f96',
-      ];
-      const hashedCategoryName = category
-        .split('')
-        .reduce((prev, curr) => prev + curr.charCodeAt(0), 0);
+      const colorList = ['#f5222d', '#fa541c', '#fa8c16', '#faad14', '#d4b106', '#a0d911', '#52c41a', '#13c2c2', '#1677ff', '#2f54eb', '#722ed1', '#eb2f96'];
+      const hashedCategoryName = category.split('').reduce((prev, curr) => prev + curr.charCodeAt(0), 0);
       categoryColor = colorList[hashedCategoryName % colorList.length];
     }
 
     const fmtTime = time.format('HH:mm:ss.SSS');
-
     const prefix = (level: string, color: string) => [
       `%c${fmtTime} %c[${level}]%c %c<${category}>%c`,
       'color: #aaa; font-weight: bold;',

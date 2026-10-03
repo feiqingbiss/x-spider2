@@ -31,21 +31,30 @@ export function drainInactiveUsers(): string[] {
   return list;
 }
 
-// ✅ 新增：判断磁盘上是否已有该文件，同时接受 aria2 自动重命名生成的副本
-//   - 精确匹配 "xxx.jpg"
-//   - 接受 aria2 后缀 "xxx (1).jpg" ~ "xxx (99).jpg"
-//   - 兼容点号形式 "xxx.1.jpg" ~ "xxx.99.jpg"
-function fileExistsWithSuffix(
-  files: Set<string>,
-  baseName: string,
-): boolean {
-  if (files.has(baseName)) return true;
+// ✅ 新增：限制并发数的工具函数
+async function limitConcurrency<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let index = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }).map(
+    async () => {
+      while (index < items.length) {
+        const currentIndex = index++;
+        await fn(items[currentIndex], currentIndex);
+      }
+    },
+  );
+  await Promise.all(runners);
+}
 
+// ✅ 新增：判断磁盘上是否已有该文件，同时接受 aria2 自动重命名生成的副本
+function fileExistsWithSuffix(files: Set<string>, baseName: string): boolean {
+  if (files.has(baseName)) return true;
   const dotIdx = baseName.lastIndexOf('.');
   const stem = dotIdx >= 0 ? baseName.slice(0, dotIdx) : baseName;
   const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
-
-  // 上限 99，再多就不正常了
   for (let i = 1; i <= 99; i++) {
     if (files.has(`${stem} (${i})${ext}`)) return true;
     if (files.has(`${stem}.${i}${ext}`)) return true;
@@ -71,12 +80,10 @@ let successStreak = 0;
 
 async function waitForApiSlot(): Promise<void> {
   const now = Date.now();
-
   if (lastApiCallTime === 0 && now >= globalCooldownUntil) {
     lastApiCallTime = now;
     return;
   }
-
   if (now < globalCooldownUntil) {
     const waitMs = globalCooldownUntil - now;
     logFn('warn', `[限流] 全局冷却中，等待 ${Math.ceil(waitMs / 1000)} 秒...`);
@@ -118,10 +125,7 @@ function recordRateLimit(): void {
     MAX_COOLDOWN_MS,
   );
   setGlobalCooldown(cooldown);
-  logFn(
-    'warn',
-    `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`,
-  );
+  logFn('warn', `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`);
 }
 
 function recordSuccess(): void {
@@ -196,14 +200,10 @@ async function analyzePosts(
   for (const post of posts) {
     if (!post.medias?.length) continue;
     if (post.createdAt) {
-      if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) {
-        continue;
-      }
+      if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) continue;
     }
     for (const media of post.medias) {
-      if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) {
-        continue;
-      }
+      if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
       const mediaId = media.id || `${post.id}-${media.url}`;
       if (seenMediaIds) {
         if (seenMediaIds.has(mediaId)) continue;
@@ -214,42 +214,33 @@ async function analyzePosts(
         const resolvedDirName = settings.download.dirTemplate
           ? resolveVariables(settings.download.dirTemplate, templateData)
           : '';
-        const dir = await path.join(
-          settings.download.saveDirBase,
-          resolvedDirName,
-        );
-        const fileName = resolveVariables(
-          settings.download.fileNameTemplate,
-          templateData,
-        );
+        const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
+        const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
         mediaInfos.push({ post, media, dir, fileName });
         dirSet.add(dir);
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
     }
   }
 
   const dirToFiles = new Map<string, Set<string>>();
-  await Promise.all(
-    Array.from(dirSet).map(async (dir) => {
-      try {
-        if (!(await fs.exists(dir))) {
-          dirToFiles.set(dir, new Set());
-          return;
-        }
-        const entries = await fs.readDir(dir);
-        const files = new Set(
-          entries
-            .map((e) => e.name)
-            .filter((n): n is string => typeof n === 'string' && n.length > 0),
-        );
-        dirToFiles.set(dir, files);
-      } catch (e) {
+  // ✅ 修复：使用 limitConcurrency 限制并发读目录，防止 Windows 文件句柄耗尽
+  await limitConcurrency(Array.from(dirSet), 5, async (dir) => {
+    try {
+      if (!(await fs.exists(dir))) {
         dirToFiles.set(dir, new Set());
+        return;
       }
-    }),
-  );
+      const entries = await fs.readDir(dir);
+      const files = new Set(
+        entries
+          .map((e) => e.name)
+          .filter((n): n is string => typeof n === 'string' && n.length > 0),
+      );
+      dirToFiles.set(dir, files);
+    } catch (e) {
+      dirToFiles.set(dir, new Set());
+    }
+  });
 
   let existCount = 0;
   let totalMediaCount = 0;
@@ -258,7 +249,6 @@ async function analyzePosts(
   for (const info of mediaInfos) {
     totalMediaCount++;
     const files = dirToFiles.get(info.dir);
-    // ✅ 修复：使用 fileExistsWithSuffix 识别 aria2 重命名副本
     if (files && fileExistsWithSuffix(files, info.fileName)) {
       existCount++;
     } else {
@@ -277,51 +267,25 @@ async function preCheckWithMedias(
   perf.mark('preCheck-start');
   try {
     await waitForApiSlot();
-    const { twitterPosts, cursor } = await getUserMedias(
-      user.id,
-      undefined,
-      PRE_CHECK_COUNT,
-    );
+    const { twitterPosts, cursor } = await getUserMedias(user.id, undefined, PRE_CHECK_COUNT);
     recordSuccess();
 
     if (!twitterPosts.length) {
       logFn('info', `预检: 用户 ${user.screenName} 无媒体`);
       return {
-        success: true,
-        existCount: 0,
-        totalMediaCount: 0,
-        ratio: 0,
-        cache: { posts: [], cursor: cursor ?? null },
-        missingTasks: [],
+        success: true, existCount: 0, totalMediaCount: 0, ratio: 0,
+        cache: { posts: [], cursor: cursor ?? null }, missingTasks: [],
       };
     }
 
     perf.mark('preCheck-analyze-start');
-    const { existCount, totalMediaCount, missingTasks } = await analyzePosts(
-      twitterPosts,
-      filter,
-    );
-    perf.measure(
-      'preCheck-analyze',
-      'preCheck-analyze-start',
-      'preCheck-analyze-end',
-    );
+    const { existCount, totalMediaCount, missingTasks } = await analyzePosts(twitterPosts, filter);
+    perf.measure('preCheck-analyze', 'preCheck-analyze-start', 'preCheck-analyze-end');
 
     const ratio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
-
-    logFn(
-      'info',
-      `预检: 前 ${twitterPosts.length} 条帖, 已下载 ${existCount}/${totalMediaCount} (${(ratio * 100).toFixed(1)}%), 缺失 ${missingTasks.length}`,
-    );
+    logFn('info', `预检: 前 ${twitterPosts.length} 条帖, 已下载 ${existCount}/${totalMediaCount} (${(ratio * 100).toFixed(1)}%), 缺失 ${missingTasks.length}`);
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
-    return {
-      success: true,
-      existCount,
-      totalMediaCount,
-      ratio,
-      cache: { posts: twitterPosts, cursor: cursor ?? null },
-      missingTasks,
-    };
+    return { success: true, existCount, totalMediaCount, ratio, cache: { posts: twitterPosts, cursor: cursor ?? null }, missingTasks };
   } catch (err: any) {
     const msg = err?.message || String(err);
     if (isRateLimitError(msg)) {
@@ -330,14 +294,7 @@ async function preCheckWithMedias(
     }
     logFn('error', `预检失败 (用户 ${user.screenName})`, err);
     perf.log('preCheck failed');
-    return {
-      success: false,
-      existCount: 0,
-      totalMediaCount: 0,
-      ratio: 0,
-      cache: null,
-      missingTasks: [],
-    };
+    return { success: false, existCount: 0, totalMediaCount: 0, ratio: 0, cache: null, missingTasks: [] };
   }
 }
 
@@ -375,8 +332,7 @@ async function indexBySource(
 
     for (const post of filteredPosts) {
       for (const media of post.medias!) {
-        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
-          continue;
+        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
         const mediaId = media.id || `${post.id}-${media.url}`;
         if (seenMediaIds.has(mediaId)) continue;
         seenMediaIds.add(mediaId);
@@ -385,14 +341,8 @@ async function indexBySource(
           const resolvedDirName = settings.download.dirTemplate
             ? resolveVariables(settings.download.dirTemplate, templateData)
             : '';
-          const dir = await path.join(
-            settings.download.saveDirBase,
-            resolvedDirName,
-          );
-          const fileName = resolveVariables(
-            settings.download.fileNameTemplate,
-            templateData,
-          );
+          const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
+          const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
           mediaInfos.push({ post, media, dir, fileName });
           dirSet.add(dir);
         } catch (e: any) {
@@ -403,33 +353,29 @@ async function indexBySource(
     }
 
     const dirToFiles = new Map<string, Set<string>>();
-    await Promise.all(
-      Array.from(dirSet).map(async (dir) => {
-        try {
-          if (!(await fs.exists(dir))) {
-            dirToFiles.set(dir, new Set());
-            return;
-          }
-          const entries = await fs.readDir(dir);
-          dirToFiles.set(
-            dir,
-            new Set(
-              entries
-                .map((e) => e.name)
-                .filter(
-                  (n): n is string => typeof n === 'string' && n.length > 0,
-                ),
-            ),
-          );
-        } catch (e) {
+    // ✅ 修复：使用 limitConcurrency 限制并发读目录
+    await limitConcurrency(Array.from(dirSet), 5, async (dir) => {
+      try {
+        if (!(await fs.exists(dir))) {
           dirToFiles.set(dir, new Set());
+          return;
         }
-      }),
-    );
+        const entries = await fs.readDir(dir);
+        dirToFiles.set(
+          dir,
+          new Set(
+            entries
+              .map((e) => e.name)
+              .filter((n): n is string => typeof n === 'string' && n.length > 0),
+          ),
+        );
+      } catch (e) {
+        dirToFiles.set(dir, new Set());
+      }
+    });
 
     for (const info of mediaInfos) {
       const files = dirToFiles.get(info.dir);
-      // ✅ 修复：使用 fileExistsWithSuffix 识别 aria2 重命名副本
       if (
         settings.download.sameFileSkip &&
         files &&
@@ -462,21 +408,14 @@ async function indexBySource(
     let resp;
     try {
       resp = await getListFn(user.id, cursor);
-      perf.measure(
-        `api-${user.id}-${source}`,
-        `api-${user.id}-${source}-start`,
-        `api-${user.id}-${source}-end`,
-      );
+      perf.measure(`api-${user.id}-${source}`, `api-${user.id}-${source}-start`, `api-${user.id}-${source}-end`);
       recordSuccess();
     } catch (apiErr: any) {
-      const errMsg =
-        typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
+      const errMsg = typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
       logFn('error', `[${source}] API请求失败: ${errMsg}`);
       if (isRateLimitError(errMsg)) {
         recordRateLimit();
-        notifyRateLimitOnce(
-          Math.ceil((globalCooldownUntil - Date.now()) / 1000),
-        );
+        notifyRateLimitOnce(Math.ceil((globalCooldownUntil - Date.now()) / 1000));
         continue;
       }
       throw apiErr;
@@ -493,33 +432,20 @@ async function indexBySource(
     cursor = resp.cursor;
   }
 
-  logFn(
-    'info',
-    `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`,
-  );
+  logFn('info', `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`);
   return { tasks, skipCount, success: true };
 }
 
 // ===================== 不活跃检测 =====================
-function checkAndMarkInactive(
-  user: TwitterUser,
-  preCheckResult: PreCheckResult,
-): void {
+function checkAndMarkInactive(user: TwitterUser, preCheckResult: PreCheckResult): void {
   if (!preCheckResult.success) return;
-
   const posts = preCheckResult.cache?.posts ?? [];
   const latestPost = posts[0];
   const latestTime = latestPost?.createdAt;
-
-  const isInactive =
-    !latestTime || dayjs().diff(latestTime, 'day') > INACTIVE_THRESHOLD_DAYS;
-
+  const isInactive = !latestTime || dayjs().diff(latestTime, 'day') > INACTIVE_THRESHOLD_DAYS;
   if (isInactive) {
     inactiveUsers.add(user.screenName);
-    logFn(
-      'info',
-      `用户 ${user.screenName} 已超过 ${INACTIVE_THRESHOLD_DAYS} 天未发帖，标记为不活跃（仍会继续下载）`,
-    );
+    logFn('info', `用户 ${user.screenName} 已超过 ${INACTIVE_THRESHOLD_DAYS} 天未发帖，标记为不活跃（仍会继续下载）`);
   }
 }
 
@@ -533,11 +459,7 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  const setPhase = (
-    phase: CreationPhase,
-    phaseDetail?: string,
-    indexedPosts?: number,
-  ) => {
+  const setPhase = (phase: CreationPhase, phaseDetail?: string, indexedPosts?: number) => {
     const store = useDownloadStore.getState();
     const cur = store.creationTasks.find((t) => t.id === taskId);
     if (!cur) return;
@@ -560,7 +482,6 @@ export async function runCreationTask(
   }
 
   const forceFullScan = useAppStateStore.getState().forceFullScan;
-
   const ratioPercent = (preCheckResult.ratio * 100).toFixed(0);
   const seenMediaIds = new Set<string>();
   const allTasks: CreateDownloadTaskParams[] = [];
@@ -568,40 +489,15 @@ export async function runCreationTask(
 
   const doFullScan = async (reason: string) => {
     logFn('info', `用户 ${user.screenName} ${reason}，开始全量索引`);
-
     setPhase('index', '媒体索引 · 已 0 条', 0);
-    const mediaIndex = await indexBySource(
-      user,
-      'medias',
-      filter,
-      abortSignal,
-      seenMediaIds,
-      preCheckResult.cache?.posts || [],
-      preCheckResult.cache?.cursor ?? undefined,
-      (info) =>
-        setPhase('index', `媒体索引 · 已 ${info.totalPosts} 条`, info.totalPosts),
-    );
+    const mediaIndex = await indexBySource(user, 'medias', filter, abortSignal, seenMediaIds, preCheckResult.cache?.posts || [], preCheckResult.cache?.cursor ?? undefined, (info) => setPhase('index', `媒体索引 · 已 ${info.totalPosts} 条`, info.totalPosts));
     allTasks.push(...mediaIndex.tasks);
     totalSkip += mediaIndex.skipCount;
 
     if (ENABLE_DUAL_SOURCE_SCAN) {
       setPhase('tweets', '帖子索引 · 已 0 条', 0);
       logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
-      const tweetsIndex = await indexBySource(
-        user,
-        'tweets',
-        filter,
-        abortSignal,
-        seenMediaIds,
-        [],
-        undefined,
-        (info) =>
-          setPhase(
-            'tweets',
-            `帖子索引 · 已 ${info.totalPosts} 条`,
-            info.totalPosts,
-          ),
-      );
+      const tweetsIndex = await indexBySource(user, 'tweets', filter, abortSignal, seenMediaIds, [], undefined, (info) => setPhase('tweets', `帖子索引 · 已 ${info.totalPosts} 条`, info.totalPosts));
       allTasks.push(...tweetsIndex.tasks);
       totalSkip += tweetsIndex.skipCount;
     }
@@ -610,14 +506,9 @@ export async function runCreationTask(
   if (forceFullScan) {
     await doFullScan('[强制完整遍历]');
   } else if (preCheckResult.ratio < LOW_EXIST_RATIO_THRESHOLD) {
-    await doFullScan(
-      `前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)`,
-    );
+    await doFullScan(`前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)`);
   } else {
-    logFn(
-      'info',
-      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${LOW_EXIST_RATIO_THRESHOLD * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
-    );
+    logFn('info', `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${LOW_EXIST_RATIO_THRESHOLD * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`);
     for (const t of preCheckResult.missingTasks) {
       const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
       seenMediaIds.add(mediaId);
@@ -630,16 +521,10 @@ export async function runCreationTask(
     setPhase('creating', `准备创建 ${allTasks.length} 个下载任务`);
     perf.mark(`batchCreate-${taskId}-start`);
     await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
-    perf.measure(
-      `batchCreate-${taskId}`,
-      `batchCreate-${taskId}-start`,
-      `batchCreate-${taskId}-end`,
-    );
+    perf.measure(`batchCreate-${taskId}`, `batchCreate-${taskId}-start`, `batchCreate-${taskId}-end`);
   }
 
-  const cur = useDownloadStore
-    .getState()
-    .creationTasks.find((t) => t.id === taskId);
+  const cur = useDownloadStore.getState().creationTasks.find((t) => t.id === taskId);
   if (cur) {
     useDownloadStore.getState().updateCreationTask({
       ...cur,
@@ -649,54 +534,83 @@ export async function runCreationTask(
     });
   }
 
-  logFn(
-    'info',
-    `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
-  );
-  perf.measure(
-    `runTask-${taskId}`,
-    `runTask-${taskId}-start`,
-    `runTask-${taskId}-end`,
-  );
+  logFn('info', `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`);
+  perf.measure(`runTask-${taskId}`, `runTask-${taskId}-start`, `runTask-${taskId}-end`);
 }
 
 // ===================== 调度器 =====================
+// ✅ 修复：增加互斥锁，防止多个调度循环同时运行
+let isScheduleLoopRunning = false;
+
 export async function scheduleCreationTasks(): Promise<void> {
-  const state = useDownloadStore.getState();
-  const { creationTasks } = state;
+  // 如果已经在运行，直接退出，避免幽灵多实例
+  if (isScheduleLoopRunning) return;
+  isScheduleLoopRunning = true;
 
-  if (Date.now() < globalCooldownUntil) {
-    const waitMs = globalCooldownUntil - Date.now() + 500;
-    setTimeout(scheduleCreationTasks, Math.min(waitMs, 30000));
-    return;
-  }
-
-  const active = creationTasks.filter((t) => t.status === 'active').length;
-  if (active >= MAX_ACTIVE_TASKS) {
-    setTimeout(scheduleCreationTasks, 1000);
-    return;
-  }
-  const nextTask = creationTasks.find((t) => t.status === 'waiting');
-  if (!nextTask) {
-    setTimeout(scheduleCreationTasks, 1000);
-    return;
-  }
-  const ctrl = creationTaskAbortControllerMap.get(nextTask.id);
-  if (!ctrl || ctrl.signal.aborted) {
-    state.removeCreationTask(nextTask.id);
-    setTimeout(scheduleCreationTasks, 500);
-    return;
-  }
-  state.updateCreationTask({ ...nextTask, status: 'active' });
   try {
-    await runCreationTask(nextTask, ctrl.signal);
-  } catch (err: any) {
-    const errMsg = typeof err?.message === 'string' ? err.message : String(err);
-    logFn('error', `任务最终失败: ${errMsg}`);
+    while (true) {
+      const state = useDownloadStore.getState();
+      const { creationTasks } = state;
+
+      if (Date.now() < globalCooldownUntil) {
+        const waitMs = globalCooldownUntil - Date.now() + 500;
+        await delay(Math.min(waitMs, 30000));
+        continue;
+      }
+
+      const active = creationTasks.filter((t) => t.status === 'active').length;
+      if (active >= MAX_ACTIVE_TASKS) {
+        await delay(1000);
+        continue;
+      }
+
+      const nextTask = creationTasks.find((t) => t.status === 'waiting');
+      if (!nextTask) {
+        await delay(1000);
+        continue;
+      }
+
+      const ctrl = creationTaskAbortControllerMap.get(nextTask.id);
+      if (!ctrl || ctrl.signal.aborted) {
+        state.removeCreationTask(nextTask.id);
+        await delay(500);
+        continue;
+      }
+
+      state.updateCreationTask({ ...nextTask, status: 'active' });
+
+      try {
+        await runCreationTask(nextTask, ctrl.signal);
+      } catch (err: any) {
+        const errMsg = typeof err?.message === 'string' ? err.message : String(err);
+        logFn('error', `任务最终失败: ${errMsg}`);
+      } finally {
+        state.removeCreationTask(nextTask.id);
+      }
+
+      await delay(2000);
+    }
   } finally {
-    state.removeCreationTask(nextTask.id);
+    isScheduleLoopRunning = false;
   }
-  setTimeout(scheduleCreationTasks, 2000);
 }
 
-setTimeout(scheduleCreationTasks, 10);
+// ✅ 修复：把顶层 setTimeout 改为具名初始化函数，并加保护
+let schedulerInitialized = false;
+
+export function initCreationScheduler() {
+  if (schedulerInitialized) return;
+  schedulerInitialized = true;
+  // 延迟 10ms 启动，避免应用启动时的重入问题
+  setTimeout(() => {
+    scheduleCreationTasks().catch((err) => {
+      logFn('error', '调度器异常退出', err);
+      schedulerInitialized = false;
+      // 10 秒后尝试重启调度器
+      setTimeout(initCreationScheduler, 10000);
+    });
+  }, 10);
+}
+
+// 自动初始化一次（保留原有行为）
+initCreationScheduler();
