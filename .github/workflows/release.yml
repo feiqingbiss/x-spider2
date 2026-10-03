@@ -40,7 +40,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: 'pnpm'
 
       - name: Install frontend dependencies
         run: pnpm install --no-frozen-lockfile
@@ -52,15 +51,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}-rust-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/Cargo.toml') }}
-          cache-directories: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
 
       - name: Build frontend
         run: pnpm build
@@ -74,8 +64,11 @@ jobs:
 
       - name: Push commits and tags
         run: |
+          git reset --hard
+          git clean -fd
           git pull --rebase origin main
           git push origin main
+          git tag --list | ForEach-Object { git push origin ":refs/tags/$_" } 2>$null
           git push --tags
 
       - name: Release
@@ -84,6 +77,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(git describe --abbrev=0 --tags)
+          gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
           gh release create $VERSION ./src-tauri/target/release/bundle/nsis/* --prerelease --notes "该发布为自动构建的预览版本。" --generate-notes --title $VERSION
 
       - name: Cleanup Bundles
