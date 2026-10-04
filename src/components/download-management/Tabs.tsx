@@ -1,11 +1,11 @@
 /* eslint-disable react/prop-types */
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Progress } from 'antd';
 import { useShallow } from 'zustand/react/shallow';
 import { useDownloadStore } from '../../stores/download';
 import clsx from 'clsx';
 import { AriaStatus } from '../../utils/aria2';
-import { CreationTask } from '../../interfaces/CreationTask';
+import { CreationPhase, CreationTask } from '../../interfaces/CreationTask';
 
 export interface Tab {
   name: string;
@@ -16,6 +16,9 @@ export interface Tab {
 export interface TabsProps {
   tabs: Tab[];
 }
+
+const RING_SIZE = 44;
+const RING_STROKE = 10;
 
 function phaseText(t: CreationTask): string {
   switch (t.phase) {
@@ -36,31 +39,38 @@ function phaseText(t: CreationTask): string {
   }
 }
 
-function phasePercent(t: CreationTask): number {
-  const idx = t.indexedPosts ?? 0;
-  switch (t.phase) {
+/**
+ * 左环的百分比：基于"经过了多少 tick"来推演视觉进度。
+ * 每 tick = 200ms，不同阶段对应不同上限。
+ * 目的是给用户"正在工作"的视觉反馈，即使真实进度无法精确获知。
+ */
+function getPhasePercent(
+  phase: CreationPhase | undefined,
+  tick: number,
+): number {
+  switch (phase) {
+    case 'waiting':
+      return 0;
     case 'precheck':
-      return 10;
+      // 3 秒内到 10%
+      return Math.min(10, Math.round(tick * 0.7));
     case 'index':
-      return Math.round(20 + Math.min((idx / 100) * 35, 35));
+      // 8 秒内从 10% 到 50%
+      return Math.min(50, Math.round(10 + tick * 1));
     case 'tweets':
-      return Math.round(60 + Math.min((idx / 100) * 25, 25));
+      // 8 秒内从 50% 到 90%
+      return Math.min(90, Math.round(50 + tick * 1));
     case 'creating':
-      return 92;
+      // 3 秒内从 90% 到 95%
+      return Math.min(95, Math.round(90 + tick * 0.4));
     case 'done':
       return 100;
     default:
-      return 5;
+      return 0;
   }
 }
 
-type DashboardMode = 'idle' | 'batch' | 'creating' | 'downloading';
-
-const RING_SIZE = 44;
-const RING_STROKE = 10;
-
 export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
-  // ✅ 提前把 tabs 的 name/countStatus 提取出来，避免 selector 内闭包引用不稳定
   const tabNames = useMemo(() => tabs.map((t) => t.name), [tabs]);
   const tabCountStatusMap = useMemo(() => {
     const map: Record<string, AriaStatus[]> = {};
@@ -75,22 +85,11 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     setCurrentTab,
     creationTasks,
     batchProgress,
-    // ✅ 独立订阅计数，避免因 downloadTasks 数组引用变化触发重渲染
-    downloadingCount,
-    completedCount,
-    erroredCount,
     tabCounts,
+    userProgress,
+    activeCreation,
   } = useDownloadStore(
     useShallow((s) => {
-      const downloading = s.downloadTasks.filter((t) =>
-        ['active', 'waiting', 'paused'].includes(t.status),
-      ).length;
-      const completed = s.downloadTasks.filter(
-        (t) => t.status === 'complete',
-      ).length;
-      const errored = s.downloadTasks.filter((t) => t.status === 'error').length;
-
-      // 提前计算好每个 tab 的计数，避免在渲染时遍历
       const counts: Record<string, number> = {};
       for (const name of tabNames) {
         const countStatus = tabCountStatusMap[name] || [];
@@ -99,15 +98,37 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         ).length;
       }
 
+      // 按用户聚合：一个用户的所有任务都是 complete/error 时才算该用户完成
+      const userMap = new Map<string, { total: number; done: number }>();
+      for (const t of s.downloadTasks) {
+        const u = t.post.user?.screenName || '__unknown__';
+        let e = userMap.get(u);
+        if (!e) {
+          e = { total: 0, done: 0 };
+          userMap.set(u, e);
+        }
+        e.total++;
+        if (t.status === 'complete' || t.status === 'error') {
+          e.done++;
+        }
+      }
+      let totalUsers = 0;
+      let doneUsers = 0;
+      for (const [, e] of userMap) {
+        totalUsers++;
+        if (e.total > 0 && e.done >= e.total) doneUsers++;
+      }
+
+      const active = s.creationTasks.find((t) => t.status === 'active');
+
       return {
         currentTab: s.currentTab,
         setCurrentTab: s.setCurrentTab,
         creationTasks: s.creationTasks,
         batchProgress: s.batchProgress,
-        downloadingCount: downloading,
-        completedCount: completed,
-        erroredCount: errored,
         tabCounts: counts,
+        userProgress: { totalUsers, doneUsers },
+        activeCreation: active,
       };
     }),
   );
@@ -122,90 +143,99 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     (tab) => tab.name === currentTab,
   )?.children;
 
-  const stats = useMemo(() => {
-    return {
-      creating: creationTasks.length,
-      downloading: downloadingCount,
-      completed: completedCount,
-      errored: erroredCount,
-    };
-  }, [creationTasks.length, downloadingCount, completedCount, erroredCount]);
+  // ============ 左环：预检/索引的时间驱动进度 ============
+  const [leftTick, setLeftTick] = useState(0);
 
-  const activeCreation = useMemo(
-    () => creationTasks.find((t) => t.status === 'active'),
-    [creationTasks],
-  );
+  useEffect(() => {
+    if (!activeCreation) {
+      setLeftTick(0);
+      return;
+    }
+    setLeftTick(0);
+    const timer = setInterval(() => {
+      setLeftTick((t) => t + 1);
+    }, 200);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCreation?.id, activeCreation?.phase]);
 
-  const mode = useMemo<DashboardMode>(() => {
-    if (batchProgress && batchProgress.total > 0) return 'batch';
-    if (activeCreation) return 'creating';
-    if (stats.downloading > 0) return 'downloading';
-    return 'idle';
-  }, [batchProgress, activeCreation, stats.downloading]);
-
-  const dashboard = useMemo(() => {
-    const hasError = stats.errored > 0;
-    const errorColor = '#ff4d4f';
-    const activeColor = '#1d9bf0';
-    const successColor = '#52c41a';
-
-    if (mode === 'batch' && batchProgress) {
-      const p = Math.round(
-        (batchProgress.completed / batchProgress.total) * 100,
-      );
+  const leftRing = useMemo(() => {
+    if (activeCreation) {
+      const percent = getPhasePercent(activeCreation.phase, leftTick);
       return {
-        percent: Math.max(0, Math.min(100, p)),
-        strokeColor: hasError ? errorColor : activeColor,
-        progressStatus: 'active' as const,
-        line1: `正在处理 @${batchProgress.currentUser || '...'}`,
-        line2: `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`,
+        percent,
+        strokeColor: '#722ed1',
+        status: 'active' as const,
+        label: '预检/索引',
+        tooltip: phaseText(activeCreation),
       };
     }
-
-    if (mode === 'creating' && activeCreation) {
-      return {
-        percent: phasePercent(activeCreation),
-        strokeColor: hasError ? errorColor : activeColor,
-        progressStatus: 'active' as const,
-        line1: `正在处理 @${activeCreation.user.screenName}`,
-        line2: phaseText(activeCreation),
-      };
-    }
-
-    if (mode === 'downloading') {
-      const denom = stats.downloading + stats.completed + stats.errored;
-      const p = denom > 0 ? Math.round((stats.completed / denom) * 100) : 0;
-      return {
-        percent: p,
-        strokeColor: hasError ? errorColor : activeColor,
-        progressStatus: 'active' as const,
-        line1: '文件下载中',
-        line2: `${stats.completed} / ${denom} 已完成`,
-      };
-    }
-
-    const hasErrorIdle = stats.errored > 0;
     return {
       percent: 100,
-      strokeColor: hasErrorIdle ? errorColor : successColor,
-      progressStatus: 'normal' as const,
-      line1: '',
-      line2: hasErrorIdle ? `${stats.errored} 个任务失败` : '',
+      strokeColor: '#52c41a',
+      status: 'normal' as const,
+      label: '预检/索引',
+      tooltip: '预检/索引 已完成',
     };
-  }, [mode, batchProgress, activeCreation, stats]);
+  }, [activeCreation, leftTick]);
 
-  const phasePercentValue = activeCreation
-    ? phasePercent(activeCreation)
-    : 100;
-  const phaseLabel = activeCreation
-    ? phaseText(activeCreation)
-    : '预检/索引 已完成';
-  const phaseColor = activeCreation ? '#722ed1' : '#52c41a';
-  const phaseStatus = activeCreation
-    ? ('active' as const)
-    : ('normal' as const);
+  // ============ 中环：正在创建的任务数量 ============
+  const creatingCount = creationTasks.length;
+  const middleRing = useMemo(() => {
+    return {
+      count: creatingCount,
+      strokeColor: creatingCount > 0 ? '#1d9bf0' : '#52c41a',
+      status: (creatingCount > 0 ? 'active' : 'normal') as
+        | 'active'
+        | 'normal',
+      label: '任务创建',
+      tooltip:
+        creatingCount > 0
+          ? `正在创建 ${creatingCount} 个任务`
+          : '暂无创建任务',
+    };
+  }, [creatingCount]);
 
-  const showTextBlock = dashboard.line1 || dashboard.line2;
+  // ============ 右环：用户级别的下载完成进度 ============
+  const rightRing = useMemo(() => {
+    const { totalUsers, doneUsers } = userProgress;
+    const percent =
+      totalUsers > 0 ? Math.round((doneUsers / totalUsers) * 100) : 100;
+    const isActive = totalUsers > 0 && doneUsers < totalUsers;
+    return {
+      percent,
+      strokeColor: isActive ? '#1d9bf0' : '#52c41a',
+      status: (isActive ? 'active' : 'normal') as 'active' | 'normal',
+      label: '下载进度',
+      tooltip:
+        totalUsers > 0
+          ? `${doneUsers} / ${totalUsers} 个用户完成`
+          : '暂无下载任务',
+    };
+  }, [userProgress]);
+
+  // ============ 右侧文字区 ============
+  const textLine1 = useMemo(() => {
+    if (activeCreation) {
+      return `正在处理 @${activeCreation.user.screenName}`;
+    }
+    if (batchProgress && batchProgress.currentUser) {
+      return `正在处理 @${batchProgress.currentUser}`;
+    }
+    return '';
+  }, [activeCreation, batchProgress]);
+
+  const textLine2 = useMemo(() => {
+    if (activeCreation) {
+      return phaseText(activeCreation);
+    }
+    if (batchProgress) {
+      return `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`;
+    }
+    return '';
+  }, [activeCreation, batchProgress]);
+
+  const showTextBlock = textLine1 || textLine2;
 
   return (
     <div className="h-full flex flex-col">
@@ -253,16 +283,17 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           })}
         </ul>
 
-        {/* 两个圆环固定在 tab 卡片后面 */}
+        {/* 三个圆环 */}
         <div className="flex items-center gap-3 shrink-0">
-          <div className="flex flex-col items-center" title={phaseLabel}>
+          {/* 左环：预检/索引（时间驱动动画） */}
+          <div className="flex flex-col items-center" title={leftRing.tooltip}>
             <Progress
               type="circle"
               size={RING_SIZE}
               strokeWidth={RING_STROKE}
-              percent={phasePercentValue}
-              strokeColor={phaseColor}
-              status={phaseStatus}
+              percent={leftRing.percent}
+              strokeColor={leftRing.strokeColor}
+              status={leftRing.status}
               format={(p) => (
                 <span className="text-[10px] font-bold text-gray-700">
                   {p}%
@@ -270,17 +301,42 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
-              预检/索引
+              {leftRing.label}
             </span>
           </div>
-          <div className="flex flex-col items-center" title={dashboard.line2}>
+
+          {/* 中环：创建任务数量 */}
+          <div
+            className="flex flex-col items-center"
+            title={middleRing.tooltip}
+          >
             <Progress
               type="circle"
               size={RING_SIZE}
               strokeWidth={RING_STROKE}
-              percent={dashboard.percent}
-              strokeColor={dashboard.strokeColor}
-              status={dashboard.progressStatus}
+              percent={100}
+              strokeColor={middleRing.strokeColor}
+              status={middleRing.status}
+              format={() => (
+                <span className="text-[11px] font-bold text-gray-700">
+                  {middleRing.count > 0 ? middleRing.count : ''}
+                </span>
+              )}
+            />
+            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+              {middleRing.label}
+            </span>
+          </div>
+
+          {/* 右环：用户下载完成比例 */}
+          <div className="flex flex-col items-center" title={rightRing.tooltip}>
+            <Progress
+              type="circle"
+              size={RING_SIZE}
+              strokeWidth={RING_STROKE}
+              percent={rightRing.percent}
+              strokeColor={rightRing.strokeColor}
+              status={rightRing.status}
               format={(p) => (
                 <span className="text-[10px] font-bold text-gray-700">
                   {p}%
@@ -288,20 +344,20 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               )}
             />
             <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
-              总进度
+              {rightRing.label}
             </span>
           </div>
         </div>
 
-        {/* 右侧文字描述 */}
+        {/* 右侧文字区 */}
         {showTextBlock ? (
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-800 truncate">
-              {dashboard.line1}
+              {textLine1}
             </div>
-            {dashboard.line2 && (
+            {textLine2 && (
               <div className="text-xs text-gray-500 truncate mt-0.5">
-                {dashboard.line2}
+                {textLine2}
               </div>
             )}
           </div>
