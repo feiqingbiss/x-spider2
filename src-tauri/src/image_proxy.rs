@@ -12,6 +12,7 @@ struct SettingsFile {
 #[derive(serde::Deserialize)]
 struct SettingsState {
     proxy: Option<ProxyConfig>,
+    download: Option<DownloadConfig>,
 }
 
 #[derive(serde::Deserialize)]
@@ -20,11 +21,51 @@ struct ProxyConfig {
     url: String,
 }
 
+#[derive(serde::Deserialize)]
+struct DownloadConfig {
+    #[serde(rename = "saveDirBase")]
+    save_dir_base: Option<String>,
+}
+
+/// 读取用户的下载目录配置（settings.json → state.download.saveDirBase）
+fn get_save_dir_base() -> Option<String> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    let path = PathBuf::from(appdata).join("x-spider").join("settings.json");
+    let content = fs::read_to_string(path).ok()?;
+    let settings: SettingsFile = serde_json::from_str(&content).ok()?;
+    let state = settings.state?;
+    let download = state.download?;
+    let base = download.save_dir_base?;
+    let trimmed = base.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// 读取系统默认下载目录（%USERPROFILE%\Downloads）
+fn get_default_download_dir() -> Option<PathBuf> {
+    let user_profile = std::env::var("USERPROFILE").ok()?;
+    Some(PathBuf::from(user_profile).join("Downloads"))
+}
+
+/// 图片缓存目录：<下载目录>/.x-spider-cache
+/// 如果用户没配置下载目录，回退到系统默认下载目录。
 fn get_cache_dir() -> Result<PathBuf, String> {
-    let base = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map_err(|_| "无法获取 LOCALAPPDATA")?;
-    let dir = base.join("x-spider").join("image-cache");
+    let base_dir: PathBuf = if let Some(save_dir) = get_save_dir_base() {
+        PathBuf::from(save_dir)
+    } else if let Some(default_download) = get_default_download_dir() {
+        default_download
+    } else {
+        // 最后的兜底：%LOCALAPPDATA%\x-spider
+        let local = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map_err(|_| "无法获取缓存目录")?;
+        local.join("x-spider")
+    };
+
+    let dir = base_dir.join(".x-spider-cache");
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     }
@@ -73,7 +114,7 @@ async fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
         .map(|b| b.to_vec())
 }
 
-/// 走软件内配置的代理下载图片并缓存到 %LOCALAPPDATA%\x-spider\image-cache
+/// 走软件内配置的代理下载图片并缓存到 <下载目录>/.x-spider-cache
 /// 返回本地缓存文件的绝对路径。
 #[tauri::command]
 pub async fn download_image_to_cache(url: String) -> Result<String, String> {
@@ -81,7 +122,6 @@ pub async fn download_image_to_cache(url: String) -> Result<String, String> {
     let mut hasher = DefaultHasher::new();
     url.hash(&mut hasher);
     let hash = hasher.finish();
-    // ✅ 使用 .jpg 后缀，方便识别，前端 convertFileSrc 也能正确识别 MIME
     let file_name = format!("{:x}.jpg", hash);
     let file_path = cache_dir.join(&file_name);
 
@@ -123,7 +163,6 @@ pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
             Err(_) => continue,
         };
 
-        // 优先使用 accessed 时间；若不可用，则回退到 modified
         let last_used = metadata.accessed().or_else(|_| metadata.modified());
 
         let last_used = match last_used {
@@ -133,10 +172,9 @@ pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
 
         let elapsed = match now.duration_since(last_used) {
             Ok(d) => d,
-            Err(_) => continue, // 时间在未来，跳过
+            Err(_) => continue,
         };
 
-        // 超过 max_age 的 .jpg 或遗留的 .bin 都清理
         let is_cache_file = path
             .extension()
             .and_then(|e| e.to_str())
