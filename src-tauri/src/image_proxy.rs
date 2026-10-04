@@ -97,18 +97,6 @@ async fn download_image(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// 构造一个带状态码和 Content-Type 的 Tauri Response
-fn make_response(status: u16, content_type: Option<&str>, body: Vec<u8>) -> Response {
-    let mut response = Response::new(body);
-    response.status = status;
-    if let Some(ct) = content_type {
-        response
-            .headers
-            .insert("Content-Type".to_string(), ct.to_string());
-    }
-    response
-}
-
 /// 处理自定义协议 xsimg://localhost/?url=<encoded_url>
 /// Tauri 1.x 要求返回 Result<Response, Box<dyn Error>>
 pub fn handle_xsimg_protocol(
@@ -133,20 +121,21 @@ pub fn handle_xsimg_protocol(
     let encoded_url = match encoded_url {
         Some(u) => u,
         None => {
-            return Ok(make_response(400, None, Vec::new()));
+            // 无 url 参数：返回空 body，前端 onError 触发
+            return Ok(Response::new(Vec::new()));
         }
     };
 
     let url = match percent_decode(&encoded_url) {
         Some(u) => u,
         None => {
-            return Ok(make_response(400, None, Vec::new()));
+            return Ok(Response::new(Vec::new()));
         }
     };
 
-    // 并发限制：超过上限直接返回 503，让前端显示占位图
+    // 并发限制：超过上限直接返回空 body，让前端显示占位图
     if ACTIVE_DOWNLOADS.load(Ordering::Relaxed) >= MAX_CONCURRENT_DOWNLOADS {
-        return Ok(make_response(503, None, Vec::new()));
+        return Ok(Response::new(Vec::new()));
     }
 
     ACTIVE_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
@@ -154,8 +143,10 @@ pub fn handle_xsimg_protocol(
     ACTIVE_DOWNLOADS.fetch_sub(1, Ordering::Relaxed);
 
     match result {
-        Ok(bytes) => Ok(make_response(200, Some("image/jpeg"), bytes)),
-        Err(_) => Ok(make_response(404, None, Vec::new())),
+        // 成功：返回图片字节，浏览器通过 magic bytes 自动识别为 JPEG
+        Ok(bytes) => Ok(Response::new(bytes)),
+        // 失败：返回空 body，前端 <img> onError 触发
+        Err(_) => Ok(Response::new(Vec::new())),
     }
 }
 
