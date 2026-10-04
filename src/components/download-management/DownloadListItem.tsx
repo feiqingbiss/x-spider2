@@ -7,10 +7,9 @@ import {
   FolderFilled,
   PauseOutlined,
 } from '@ant-design/icons';
-import { ProxyAvatar } from '../common/ProxyAvatar';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { invoke } from '@tauri-apps/api/tauri';
-import { App, Avatar, Progress } from 'antd';
+import { App, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -23,6 +22,7 @@ import MediaType from '../../enums/MediaType';
 import { delay } from '../../utils';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
+import { ProxyAvatar } from '../common/ProxyAvatar';
 
 export interface DownloadListItemProps {
   task: DownloadTask;
@@ -56,7 +56,6 @@ class ThumbCache {
   get(gid: string): string | null | undefined {
     if (!this.map.has(gid)) return undefined;
     const v = this.map.get(gid)!;
-    // LRU：命中后移到末尾（Map 保持插入顺序）
     this.map.delete(gid);
     this.map.set(gid, v);
     return v;
@@ -65,7 +64,6 @@ class ThumbCache {
   set(gid: string, value: string | null): void {
     if (this.map.has(gid)) this.map.delete(gid);
     this.map.set(gid, value);
-    // 超出上限：删最旧的
     while (this.map.size > MAX_THUMB_CACHE_SIZE) {
       const first = this.map.keys().next().value;
       if (first === undefined) break;
@@ -135,7 +133,6 @@ function clearThumbCache(gid: string) {
   thumbInflight.delete(gid);
 }
 
-// 视频/GIF 的 .thumb.jpg 是独立 aria2 任务，可能晚于主任务完成
 const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
 
 type ThumbKind = 'local' | 'net' | 'none';
@@ -180,7 +177,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       const canUseLocal =
         t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
 
-      // 命中缓存 → 直接用
       const cached = thumbCache.get(t.gid);
       if (cached !== undefined) {
         if (cached) {
@@ -195,7 +191,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 未完成的任务 → 直接走网络占位
       if (!canUseLocal) {
         setImgSrc(netUrl);
         setThumbKind(netUrl ? 'net' : 'none');
@@ -204,7 +199,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         };
       }
 
-      // 已完成 → 优先本地，不给网络机会
       setImgSrc('');
       setThumbKind('none');
 
@@ -238,7 +232,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             }
           }
 
-          // 本地没有 → 回退网络
           if (!cancelled) {
             setImgSrc(netUrl);
             setThumbKind(netUrl ? 'net' : 'none');
@@ -257,7 +250,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       };
     }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
 
-    // 超时兜底
     const settledRef = useRef(false);
     useEffect(() => {
       if (!imgSrc) return;
