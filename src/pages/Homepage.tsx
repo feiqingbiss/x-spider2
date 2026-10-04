@@ -14,31 +14,23 @@ import { useHomepageStore } from '../stores/homepage';
 import { useSettingsStore } from '../stores/settings';
 import { useUserSearch } from '../hooks/useUserSearch';
 import { useBatchDownload } from '../hooks/useBatchDownload';
+import { parseUsernames } from '../utils/homepage-helpers';
 
 export const Homepage: React.FC = () => {
   const { message } = App.useApp();
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
 
-  const {
-    keyword,
-    setKeyword,
-    userInfo,
-  } = useHomepageStore();
+  // ✅ 用原子 selector，避免每次 state 变化都返回新对象
+  const keyword = useHomepageStore((s) => s.keyword);
+  const setKeyword = useHomepageStore((s) => s.setKeyword);
+  const userInfo = useHomepageStore((s) => s.userInfo);
 
-  const {
-    searchHistory,
-    clearSearchHistory,
-    cookieString,
-    forceFullScan,
-    setForceFullScan,
-  } = useAppStateStore((s) => ({
-    searchHistory: s.searchHistory,
-    clearSearchHistory: s.clearSearchHistory,
-    cookieString: s.cookieString,
-    forceFullScan: s.forceFullScan,
-    setForceFullScan: s.setForceFullScan,
-  }));
+  const searchHistory = useAppStateStore((s) => s.searchHistory);
+  const clearSearchHistory = useAppStateStore((s) => s.clearSearchHistory);
+  const cookieString = useAppStateStore((s) => s.cookieString);
+  const forceFullScan = useAppStateStore((s) => s.forceFullScan);
+  const setForceFullScan = useAppStateStore((s) => s.setForceFullScan);
 
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
@@ -47,15 +39,8 @@ export const Homepage: React.FC = () => {
       const baseDir = saveDirBase || (await path.appDataDir());
       const filePath = await path.join(baseDir, 'search-user-name.txt');
       const content = await fs.readTextFile(filePath);
-      return content
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
+      // ✅ 归一化 + 去重
+      return parseUsernames(content);
     } catch {
       return [];
     }
@@ -74,12 +59,8 @@ export const Homepage: React.FC = () => {
   }, [fetchUserListCount]);
 
   const { startSearch } = useUserSearch();
-  const {
-    isBatchRunning,
-    batchProgress,
-    batchDownload,
-    cancelBatch,
-  } = useBatchDownload({ onFinished: fetchUserListCount });
+  const { isBatchRunning, batchProgress, batchDownload, cancelBatch } =
+    useBatchDownload({ onFinished: fetchUserListCount });
 
   const handleSearch = useCallback(
     (sn: string) => {
