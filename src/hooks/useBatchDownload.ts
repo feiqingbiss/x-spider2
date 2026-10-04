@@ -31,7 +31,7 @@ export interface UseBatchDownloadOptions {
 
 /**
  * 封装"一键批量下载"的完整流程。
- * 
+ *
  * ✅ 关键修复：isBatchRunning 和 AbortController 提升到 Zustand store，
  *    避免切换左侧菜单导致 Homepage 组件卸载后状态丢失。
  */
@@ -41,7 +41,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   // ✅ 从 store 读取全局状态
   const isBatchRunning = useDownloadStore((s) => s.isBatchRunning);
   const setIsBatchRunning = useDownloadStore((s) => s.setIsBatchRunning);
-  const batchAbortController = useDownloadStore((s) => s.batchAbortController);
   const setBatchAbortController = useDownloadStore(
     (s) => s.setBatchAbortController,
   );
@@ -228,7 +227,9 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
       let content = '';
       try {
         content = await fs.readTextFile(filePath);
-      } catch (e) {}
+      } catch (e) {
+        // ignore
+      }
       let usernames = content
         .split('\n')
         .map((line) =>
