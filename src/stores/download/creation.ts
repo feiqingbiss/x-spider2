@@ -31,7 +31,6 @@ export function drainInactiveUsers(): string[] {
   return list;
 }
 
-// ✅ 新增：限制并发数的工具函数
 async function limitConcurrency<T>(
   items: T[],
   limit: number,
@@ -49,7 +48,6 @@ async function limitConcurrency<T>(
   await Promise.all(runners);
 }
 
-// ✅ 新增：判断磁盘上是否已有该文件，同时接受 aria2 自动重命名生成的副本
 function fileExistsWithSuffix(files: Set<string>, baseName: string): boolean {
   if (files.has(baseName)) return true;
   const dotIdx = baseName.lastIndexOf('.');
@@ -125,7 +123,10 @@ function recordRateLimit(): void {
     MAX_COOLDOWN_MS,
   );
   setGlobalCooldown(cooldown);
-  logFn('warn', `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`);
+  logFn(
+    'warn',
+    `[限流] 连续限流 ${rateLimitStreak} 次，冷却 ${Math.ceil(cooldown / 1000)} 秒`,
+  );
 }
 
 function recordSuccess(): void {
@@ -200,10 +201,14 @@ async function analyzePosts(
   for (const post of posts) {
     if (!post.medias?.length) continue;
     if (post.createdAt) {
-      if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) continue;
+      if (post.createdAt.isBefore(since) || post.createdAt.isAfter(until)) {
+        continue;
+      }
     }
     for (const media of post.medias) {
-      if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
+      if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) {
+        continue;
+      }
       const mediaId = media.id || `${post.id}-${media.url}`;
       if (seenMediaIds) {
         if (seenMediaIds.has(mediaId)) continue;
@@ -214,16 +219,23 @@ async function analyzePosts(
         const resolvedDirName = settings.download.dirTemplate
           ? resolveVariables(settings.download.dirTemplate, templateData)
           : '';
-        const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
-        const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
+        const dir = await path.join(
+          settings.download.saveDirBase,
+          resolvedDirName,
+        );
+        const fileName = resolveVariables(
+          settings.download.fileNameTemplate,
+          templateData,
+        );
         mediaInfos.push({ post, media, dir, fileName });
         dirSet.add(dir);
-      } catch (e) {}
+      } catch (e) {
+        // ignore
+      }
     }
   }
 
   const dirToFiles = new Map<string, Set<string>>();
-  // ✅ 修复：使用 limitConcurrency 限制并发读目录，防止 Windows 文件句柄耗尽
   await limitConcurrency(Array.from(dirSet), 5, async (dir) => {
     try {
       if (!(await fs.exists(dir))) {
@@ -267,25 +279,51 @@ async function preCheckWithMedias(
   perf.mark('preCheck-start');
   try {
     await waitForApiSlot();
-    const { twitterPosts, cursor } = await getUserMedias(user.id, undefined, PRE_CHECK_COUNT);
+    const { twitterPosts, cursor } = await getUserMedias(
+      user.id,
+      undefined,
+      PRE_CHECK_COUNT,
+    );
     recordSuccess();
 
     if (!twitterPosts.length) {
       logFn('info', `预检: 用户 ${user.screenName} 无媒体`);
       return {
-        success: true, existCount: 0, totalMediaCount: 0, ratio: 0,
-        cache: { posts: [], cursor: cursor ?? null }, missingTasks: [],
+        success: true,
+        existCount: 0,
+        totalMediaCount: 0,
+        ratio: 0,
+        cache: { posts: [], cursor: cursor ?? null },
+        missingTasks: [],
       };
     }
 
     perf.mark('preCheck-analyze-start');
-    const { existCount, totalMediaCount, missingTasks } = await analyzePosts(twitterPosts, filter);
-    perf.measure('preCheck-analyze', 'preCheck-analyze-start', 'preCheck-analyze-end');
+    const { existCount, totalMediaCount, missingTasks } = await analyzePosts(
+      twitterPosts,
+      filter,
+    );
+    perf.measure(
+      'preCheck-analyze',
+      'preCheck-analyze-start',
+      'preCheck-analyze-end',
+    );
 
     const ratio = totalMediaCount > 0 ? existCount / totalMediaCount : 0;
-    logFn('info', `预检: 前 ${twitterPosts.length} 条帖, 已下载 ${existCount}/${totalMediaCount} (${(ratio * 100).toFixed(1)}%), 缺失 ${missingTasks.length}`);
+
+    logFn(
+      'info',
+      `预检: 前 ${twitterPosts.length} 条帖, 已下载 ${existCount}/${totalMediaCount} (${(ratio * 100).toFixed(1)}%), 缺失 ${missingTasks.length}`,
+    );
     perf.measure('preCheck', 'preCheck-start', 'preCheck-end');
-    return { success: true, existCount, totalMediaCount, ratio, cache: { posts: twitterPosts, cursor: cursor ?? null }, missingTasks };
+    return {
+      success: true,
+      existCount,
+      totalMediaCount,
+      ratio,
+      cache: { posts: twitterPosts, cursor: cursor ?? null },
+      missingTasks,
+    };
   } catch (err: any) {
     const msg = err?.message || String(err);
     if (isRateLimitError(msg)) {
@@ -294,7 +332,14 @@ async function preCheckWithMedias(
     }
     logFn('error', `预检失败 (用户 ${user.screenName})`, err);
     perf.log('preCheck failed');
-    return { success: false, existCount: 0, totalMediaCount: 0, ratio: 0, cache: null, missingTasks: [] };
+    return {
+      success: false,
+      existCount: 0,
+      totalMediaCount: 0,
+      ratio: 0,
+      cache: null,
+      missingTasks: [],
+    };
   }
 }
 
@@ -332,7 +377,8 @@ async function indexBySource(
 
     for (const post of filteredPosts) {
       for (const media of post.medias!) {
-        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type)) continue;
+        if (filter.mediaTypes && !filter.mediaTypes.includes(media.type))
+          continue;
         const mediaId = media.id || `${post.id}-${media.url}`;
         if (seenMediaIds.has(mediaId)) continue;
         seenMediaIds.add(mediaId);
@@ -341,8 +387,14 @@ async function indexBySource(
           const resolvedDirName = settings.download.dirTemplate
             ? resolveVariables(settings.download.dirTemplate, templateData)
             : '';
-          const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
-          const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
+          const dir = await path.join(
+            settings.download.saveDirBase,
+            resolvedDirName,
+          );
+          const fileName = resolveVariables(
+            settings.download.fileNameTemplate,
+            templateData,
+          );
           mediaInfos.push({ post, media, dir, fileName });
           dirSet.add(dir);
         } catch (e: any) {
@@ -353,7 +405,6 @@ async function indexBySource(
     }
 
     const dirToFiles = new Map<string, Set<string>>();
-    // ✅ 修复：使用 limitConcurrency 限制并发读目录
     await limitConcurrency(Array.from(dirSet), 5, async (dir) => {
       try {
         if (!(await fs.exists(dir))) {
@@ -408,14 +459,21 @@ async function indexBySource(
     let resp;
     try {
       resp = await getListFn(user.id, cursor);
-      perf.measure(`api-${user.id}-${source}`, `api-${user.id}-${source}-start`, `api-${user.id}-${source}-end`);
+      perf.measure(
+        `api-${user.id}-${source}`,
+        `api-${user.id}-${source}-start`,
+        `api-${user.id}-${source}-end`,
+      );
       recordSuccess();
     } catch (apiErr: any) {
-      const errMsg = typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
+      const errMsg =
+        typeof apiErr?.message === 'string' ? apiErr.message : String(apiErr);
       logFn('error', `[${source}] API请求失败: ${errMsg}`);
       if (isRateLimitError(errMsg)) {
         recordRateLimit();
-        notifyRateLimitOnce(Math.ceil((globalCooldownUntil - Date.now()) / 1000));
+        notifyRateLimitOnce(
+          Math.ceil((globalCooldownUntil - Date.now()) / 1000),
+        );
         continue;
       }
       throw apiErr;
@@ -432,20 +490,33 @@ async function indexBySource(
     cursor = resp.cursor;
   }
 
-  logFn('info', `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`);
+  logFn(
+    'info',
+    `[${source}] 索引完成: 待下载 ${tasks.length}, 跳过 ${skipCount}`,
+  );
   return { tasks, skipCount, success: true };
 }
 
 // ===================== 不活跃检测 =====================
-function checkAndMarkInactive(user: TwitterUser, preCheckResult: PreCheckResult): void {
+function checkAndMarkInactive(
+  user: TwitterUser,
+  preCheckResult: PreCheckResult,
+): void {
   if (!preCheckResult.success) return;
+
   const posts = preCheckResult.cache?.posts ?? [];
   const latestPost = posts[0];
   const latestTime = latestPost?.createdAt;
-  const isInactive = !latestTime || dayjs().diff(latestTime, 'day') > INACTIVE_THRESHOLD_DAYS;
+
+  const isInactive =
+    !latestTime || dayjs().diff(latestTime, 'day') > INACTIVE_THRESHOLD_DAYS;
+
   if (isInactive) {
     inactiveUsers.add(user.screenName);
-    logFn('info', `用户 ${user.screenName} 已超过 ${INACTIVE_THRESHOLD_DAYS} 天未发帖，标记为不活跃（仍会继续下载）`);
+    logFn(
+      'info',
+      `用户 ${user.screenName} 已超过 ${INACTIVE_THRESHOLD_DAYS} 天未发帖，标记为不活跃（仍会继续下载）`,
+    );
   }
 }
 
@@ -459,7 +530,11 @@ export async function runCreationTask(
 
   const { filter, user } = task;
 
-  const setPhase = (phase: CreationPhase, phaseDetail?: string, indexedPosts?: number) => {
+  const setPhase = (
+    phase: CreationPhase,
+    phaseDetail?: string,
+    indexedPosts?: number,
+  ) => {
     const store = useDownloadStore.getState();
     const cur = store.creationTasks.find((t) => t.id === taskId);
     if (!cur) return;
@@ -478,10 +553,13 @@ export async function runCreationTask(
 
   if (preCheckResult.totalMediaCount === 0) {
     logFn('info', `用户 ${user.screenName} 无媒体，跳过`);
+    // ✅ 无媒体也视为该用户"处理完成"
+    useDownloadStore.getState().addCompletedUser(user.screenName);
     return;
   }
 
   const forceFullScan = useAppStateStore.getState().forceFullScan;
+
   const ratioPercent = (preCheckResult.ratio * 100).toFixed(0);
   const seenMediaIds = new Set<string>();
   const allTasks: CreateDownloadTaskParams[] = [];
@@ -489,15 +567,40 @@ export async function runCreationTask(
 
   const doFullScan = async (reason: string) => {
     logFn('info', `用户 ${user.screenName} ${reason}，开始全量索引`);
+
     setPhase('index', '媒体索引 · 已 0 条', 0);
-    const mediaIndex = await indexBySource(user, 'medias', filter, abortSignal, seenMediaIds, preCheckResult.cache?.posts || [], preCheckResult.cache?.cursor ?? undefined, (info) => setPhase('index', `媒体索引 · 已 ${info.totalPosts} 条`, info.totalPosts));
+    const mediaIndex = await indexBySource(
+      user,
+      'medias',
+      filter,
+      abortSignal,
+      seenMediaIds,
+      preCheckResult.cache?.posts || [],
+      preCheckResult.cache?.cursor ?? undefined,
+      (info) =>
+        setPhase('index', `媒体索引 · 已 ${info.totalPosts} 条`, info.totalPosts),
+    );
     allTasks.push(...mediaIndex.tasks);
     totalSkip += mediaIndex.skipCount;
 
     if (ENABLE_DUAL_SOURCE_SCAN) {
       setPhase('tweets', '帖子索引 · 已 0 条', 0);
       logFn('info', `用户 ${user.screenName} 开始帖子源索引`);
-      const tweetsIndex = await indexBySource(user, 'tweets', filter, abortSignal, seenMediaIds, [], undefined, (info) => setPhase('tweets', `帖子索引 · 已 ${info.totalPosts} 条`, info.totalPosts));
+      const tweetsIndex = await indexBySource(
+        user,
+        'tweets',
+        filter,
+        abortSignal,
+        seenMediaIds,
+        [],
+        undefined,
+        (info) =>
+          setPhase(
+            'tweets',
+            `帖子索引 · 已 ${info.totalPosts} 条`,
+            info.totalPosts,
+          ),
+      );
       allTasks.push(...tweetsIndex.tasks);
       totalSkip += tweetsIndex.skipCount;
     }
@@ -506,9 +609,14 @@ export async function runCreationTask(
   if (forceFullScan) {
     await doFullScan('[强制完整遍历]');
   } else if (preCheckResult.ratio < LOW_EXIST_RATIO_THRESHOLD) {
-    await doFullScan(`前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)`);
+    await doFullScan(
+      `前 ${PRE_CHECK_COUNT} 条仅 ${ratioPercent}% 已下载 (<${LOW_EXIST_RATIO_THRESHOLD * 100}%)`,
+    );
   } else {
-    logFn('info', `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${LOW_EXIST_RATIO_THRESHOLD * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`);
+    logFn(
+      'info',
+      `用户 ${user.screenName} 前 ${PRE_CHECK_COUNT} 条已下载 ${ratioPercent}% (>=${LOW_EXIST_RATIO_THRESHOLD * 100}%)，仅补全缺失的 ${preCheckResult.missingTasks.length} 个媒体`,
+    );
     for (const t of preCheckResult.missingTasks) {
       const mediaId = t.media.id || `${t.post.id}-${t.media.url}`;
       seenMediaIds.add(mediaId);
@@ -521,10 +629,19 @@ export async function runCreationTask(
     setPhase('creating', `准备创建 ${allTasks.length} 个下载任务`);
     perf.mark(`batchCreate-${taskId}-start`);
     await useDownloadStore.getState().batchCreateDownloadTask(allTasks);
-    perf.measure(`batchCreate-${taskId}`, `batchCreate-${taskId}-start`, `batchCreate-${taskId}-end`);
+    perf.measure(
+      `batchCreate-${taskId}`,
+      `batchCreate-${taskId}-start`,
+      `batchCreate-${taskId}-end`,
+    );
+  } else {
+    // ✅ 无需新增任务（全部已下载）→ 标记该用户"处理完成"
+    useDownloadStore.getState().addCompletedUser(user.screenName);
   }
 
-  const cur = useDownloadStore.getState().creationTasks.find((t) => t.id === taskId);
+  const cur = useDownloadStore
+    .getState()
+    .creationTasks.find((t) => t.id === taskId);
   if (cur) {
     useDownloadStore.getState().updateCreationTask({
       ...cur,
@@ -534,16 +651,21 @@ export async function runCreationTask(
     });
   }
 
-  logFn('info', `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`);
-  perf.measure(`runTask-${taskId}`, `runTask-${taskId}-start`, `runTask-${taskId}-end`);
+  logFn(
+    'info',
+    `用户 ${user.screenName} 完成: 新增 ${allTasks.length}, 跳过 ${totalSkip}`,
+  );
+  perf.measure(
+    `runTask-${taskId}`,
+    `runTask-${taskId}-start`,
+    `runTask-${taskId}-end`,
+  );
 }
 
 // ===================== 调度器 =====================
-// ✅ 修复：增加互斥锁，防止多个调度循环同时运行
 let isScheduleLoopRunning = false;
 
 export async function scheduleCreationTasks(): Promise<void> {
-  // 如果已经在运行，直接退出，避免幽灵多实例
   if (isScheduleLoopRunning) return;
   isScheduleLoopRunning = true;
 
@@ -595,22 +717,18 @@ export async function scheduleCreationTasks(): Promise<void> {
   }
 }
 
-// ✅ 修复：把顶层 setTimeout 改为具名初始化函数，并加保护
 let schedulerInitialized = false;
 
 export function initCreationScheduler() {
   if (schedulerInitialized) return;
   schedulerInitialized = true;
-  // 延迟 10ms 启动，避免应用启动时的重入问题
   setTimeout(() => {
     scheduleCreationTasks().catch((err) => {
       logFn('error', '调度器异常退出', err);
       schedulerInitialized = false;
-      // 10 秒后尝试重启调度器
       setTimeout(initCreationScheduler, 10000);
     });
   }, 10);
 }
 
-// 自动初始化一次（保留原有行为）
 initCreationScheduler();

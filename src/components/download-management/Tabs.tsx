@@ -91,6 +91,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         ).length;
       }
 
+      // 正在创建任务的用户集合（小写归一）
       const creatingSet = new Set<string>();
       for (const t of s.creationTasks) {
         if (t.user?.screenName) {
@@ -98,6 +99,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         }
       }
 
+      // 按用户聚合 downloadTasks
       const userMap = new Map<string, { total: number; done: number }>();
       for (const t of s.downloadTasks) {
         const u = t.post.user?.screenName?.toLowerCase();
@@ -113,12 +115,22 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         }
       }
 
+      // ✅ 会话用户集合 + 已由后端标记完成的用户集合
       const sessionSet = new Set(
         s.sessionUserNames.map((n) => n.toLowerCase()),
       );
+      const completedSet = new Set(
+        s.completedUsers.map((n) => n.toLowerCase()),
+      );
+
       let doneUsersCount = 0;
       for (const name of sessionSet) {
         if (creatingSet.has(name)) continue;
+        // ✅ 优先使用后端标记的"处理完成"（预检 100% 已下载 / 无媒体）
+        if (completedSet.has(name)) {
+          doneUsersCount++;
+          continue;
+        }
         const e = userMap.get(name);
         if (e && e.total > 0 && e.done >= e.total) {
           doneUsersCount++;
@@ -203,7 +215,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [creatingCount]);
 
-  // ============ 右环：本次会话已完成用户 / 会话总用户 ============
+  // ============ 右环：已完成用户 / 会话总用户 ============
   const sessionTotal = sessionUserNames.length;
   const rightRing = useMemo(() => {
     const total = sessionTotal;
@@ -335,7 +347,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             </span>
           </div>
 
-          {/* 右环：单行显示 已完成/总数 */}
+          {/* 右环：已完成/总数 */}
           <div className="flex flex-col items-center" title={rightRing.tooltip}>
             <Progress
               type="circle"
