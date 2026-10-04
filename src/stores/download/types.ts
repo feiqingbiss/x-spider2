@@ -43,4 +43,10 @@ export interface DownloadStore {
   updateCreationTask: (task: CreationTask) => void;
   batchProgress: BatchProgress | null;
   setBatchProgress: (progress: BatchProgress | null) => void;
+
+  // ✅ 新增：批量下载的全局运行状态，避免切换路由时丢失
+  isBatchRunning: boolean;
+  setIsBatchRunning: (v: boolean) => void;
+  batchAbortController: AbortController | null;
+  setBatchAbortController: (ctrl: AbortController | null) => void;
 }

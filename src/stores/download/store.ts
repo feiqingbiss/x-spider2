@@ -151,7 +151,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     if (changed) set({ downloadTasks: next });
   },
   batchCreateDownloadTask: async (paramsList) => {
-    // 1. 本地预准备所有任务（CPU 操作，速度快）
     const tasks: DownloadTask[] = [];
     const thumbTasks: Array<{ url: string; dir: string; fileName: string }> = [];
 
@@ -166,7 +165,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }
     if (!tasks.length) return;
 
-    // 2. 批量打包发送 addUri 请求（一次 IPC 搞定）
     const addPayloads = tasks.map((t) => ({
       methodName: 'aria2.addUri',
       params: [[t.downloadUrl], buildAddUriOptions(t.dir, t.fileName)],
@@ -178,17 +176,14 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     const skipTasks: DownloadTask[] = [];
     const goodGids: string[] = [];
 
-    // 3. 解析返回结果
     results.forEach((result: any, index: number) => {
       const task = tasks[index];
       if (Array.isArray(result) && result.length > 0 && !result[0].faultCode) {
-        // 成功：result 形如 [gid]
         const gid = result[0] as string;
         task.gid = gid;
         goodTasks.push(task);
         goodGids.push(gid);
       } else if (result?.faultCode || result?.faultString) {
-        // 失败
         const errMsg = result.faultString || '未知错误';
         if (isFileAlreadyExistsError(errMsg, result.faultCode)) {
           logFn('info', `文件已存在，跳过：${task.fileName}`);
@@ -207,7 +202,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       }
     });
 
-    // 4. 批量查询刚创建的任务状态
     if (goodGids.length > 0) {
       try {
         const statusMap = await aria2.tellStatus(goodGids);
@@ -221,7 +215,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       }
     }
 
-    // 5. 批量发送视频封面图任务（不阻塞主流程）
     if (thumbTasks.length) {
       const thumbPayloads = thumbTasks.map((tt) => ({
         methodName: 'aria2.addUri',
@@ -235,7 +228,6 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
       });
     }
 
-    // 6. 更新状态
     if (goodTasks.length > 0 || skipTasks.length > 0) {
       set({
         downloadTasks: get().downloadTasks.concat(goodTasks).concat(skipTasks),
@@ -443,9 +435,15 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   },
   batchProgress: null,
   setBatchProgress: (p) => set({ batchProgress: p }),
+
+  // ✅ 新增：批量下载的全局运行状态
+  isBatchRunning: false,
+  setIsBatchRunning: (v) => set({ isBatchRunning: v }),
+  batchAbortController: null,
+  setBatchAbortController: (ctrl) => set({ batchAbortController: ctrl }),
 }));
 
-// ================= 自动同步（优化：只查询视口内任务） =================
+// ================= 自动同步（只查询视口内任务） =================
 let syncTimerId: ReturnType<typeof setInterval> | null = null;
 
 async function doAutoSync() {
@@ -459,7 +457,6 @@ async function doAutoSync() {
     const now = Date.now();
     const resultMap = await aria2.tellStatus(realIds);
 
-    // ✅ 优化：只遍历 realIds 对应的任务，而不是整个 downloadTasks
     const taskMap = new Map(state.downloadTasks.map((t) => [t.gid, t]));
     const updated: DownloadTask[] = [];
 

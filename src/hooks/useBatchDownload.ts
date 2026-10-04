@@ -1,5 +1,5 @@
 import { App } from 'antd';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback } from 'react';
 import { fs, path } from '@tauri-apps/api';
 import { useAppStateStore } from '../stores/app-state';
 import { useDownloadStore } from '../stores/download';
@@ -31,15 +31,20 @@ export interface UseBatchDownloadOptions {
 
 /**
  * 封装"一键批量下载"的完整流程。
- * - 从名单文件读用户名
- * - 逐个用户去重、下载、失败重试
- * - 支持中途取消
- * - 结束时写入 failed_users.txt
+ * 
+ * ✅ 关键修复：isBatchRunning 和 AbortController 提升到 Zustand store，
+ *    避免切换左侧菜单导致 Homepage 组件卸载后状态丢失。
  */
 export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   const { message, notification } = App.useApp();
-  const [isBatchRunning, setIsBatchRunning] = useState(false);
-  const batchAbortRef = useRef<AbortController | null>(null);
+
+  // ✅ 从 store 读取全局状态
+  const isBatchRunning = useDownloadStore((s) => s.isBatchRunning);
+  const setIsBatchRunning = useDownloadStore((s) => s.setIsBatchRunning);
+  const batchAbortController = useDownloadStore((s) => s.batchAbortController);
+  const setBatchAbortController = useDownloadStore(
+    (s) => s.setBatchAbortController,
+  );
 
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
@@ -198,14 +203,17 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   }, []);
 
   const cancelBatch = useCallback(() => {
-    if (batchAbortRef.current) {
-      batchAbortRef.current.abort();
+    // ✅ 从 store 读取 AbortController
+    const ctrl = useDownloadStore.getState().batchAbortController;
+    if (ctrl) {
+      ctrl.abort();
       message.info('正在取消批量下载...');
     }
   }, [message]);
 
   const batchDownload = useCallback(async () => {
-    if (isBatchRunning) {
+    // ✅ 从 store 检查是否已在运行
+    if (useDownloadStore.getState().isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
       return;
     }
@@ -238,9 +246,10 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
 
       usernames = shuffleArray(usernames);
 
+      // ✅ 写入 store，切换路由也不丢失
       setIsBatchRunning(true);
       const ctrl = new AbortController();
-      batchAbortRef.current = ctrl;
+      setBatchAbortController(ctrl);
       const signal = ctrl.signal;
 
       const total = usernames.length;
@@ -338,18 +347,19 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
         });
       }
     } catch (err: any) {
-      if (batchAbortRef.current?.signal.aborted) {
+      const ctrl = useDownloadStore.getState().batchAbortController;
+      if (ctrl?.signal.aborted) {
         return;
       }
       window.log.error('批量下载失败', err);
       message.error(`批量下载失败：${err?.message || '未知错误'}`);
     } finally {
-      batchAbortRef.current = null;
+      // ✅ 清理全局状态
+      setBatchAbortController(null);
       setBatchProgress(null);
       setIsBatchRunning(false);
     }
   }, [
-    isBatchRunning,
     cookieString,
     message,
     notification,
@@ -358,6 +368,8 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
     waitForCreationTasksDone,
     writeFailedUsersFile,
     setBatchProgress,
+    setIsBatchRunning,
+    setBatchAbortController,
     opts,
   ]);
 
