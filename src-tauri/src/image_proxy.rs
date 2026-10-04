@@ -26,7 +26,10 @@ static ACTIVE_DOWNLOADS: AtomicUsize = AtomicUsize::new(0);
 const MAX_CONCURRENT_DOWNLOADS: usize = 6;
 
 fn get_cache_dir() -> Result<PathBuf, String> {
-    let base = dirs::data_local_dir().ok_or("无法获取本地数据目录")?;
+    // 使用 %LOCALAPPDATA%\x-spider\image-cache
+    let base = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map_err(|_| "无法获取 LOCALAPPDATA")?;
     let dir = base.join("x-spider").join("image-cache");
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -94,51 +97,56 @@ async fn download_image(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// 处理自定义协议 xsimg://localhost/?url=<encoded_url>
-pub fn handle_xsimg_protocol(request: &Request) -> Response<Vec<u8>> {
-    // 解析 query 参数 url
-    let uri = request.uri();
-    let query = uri.query().unwrap_or("");
+/// 构造一个带状态码和 Content-Type 的 Tauri Response
+fn make_response(status: u16, content_type: Option<&str>, body: Vec<u8>) -> Response {
+    let mut response = Response::new(body);
+    response.status = status;
+    if let Some(ct) = content_type {
+        response
+            .headers
+            .insert("Content-Type".to_string(), ct.to_string());
+    }
+    response
+}
 
-    let encoded_url = query
-        .split('&')
-        .find_map(|pair| {
-            let mut parts = pair.splitn(2, '=');
-            let key = parts.next()?;
-            let value = parts.next()?;
-            if key == "url" {
-                Some(value.to_string())
-            } else {
-                None
-            }
-        });
+/// 处理自定义协议 xsimg://localhost/?url=<encoded_url>
+/// Tauri 1.x 要求返回 Result<Response, Box<dyn Error>>
+pub fn handle_xsimg_protocol(
+    request: &Request,
+) -> Result<Response, Box<dyn std::error::Error>> {
+    // Tauri 1.x 的 request.uri() 返回 &str，需要手动解析 query
+    let uri = request.uri();
+    let query = uri.find('?').map(|i| &uri[i + 1..]).unwrap_or("");
+
+    // 提取 url 参数
+    let encoded_url = query.split('&').find_map(|pair| {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next()?;
+        let value = parts.next()?;
+        if key == "url" {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    });
 
     let encoded_url = match encoded_url {
         Some(u) => u,
         None => {
-            return Response::builder()
-                .status(400)
-                .body(Vec::new())
-                .unwrap();
+            return Ok(make_response(400, None, Vec::new()));
         }
     };
 
     let url = match percent_decode(&encoded_url) {
         Some(u) => u,
         None => {
-            return Response::builder()
-                .status(400)
-                .body(Vec::new())
-                .unwrap();
+            return Ok(make_response(400, None, Vec::new()));
         }
     };
 
-    // 并发限制
+    // 并发限制：超过上限直接返回 503，让前端显示占位图
     if ACTIVE_DOWNLOADS.load(Ordering::Relaxed) >= MAX_CONCURRENT_DOWNLOADS {
-        return Response::builder()
-            .status(503)
-            .body(Vec::new())
-            .unwrap();
+        return Ok(make_response(503, None, Vec::new()));
     }
 
     ACTIVE_DOWNLOADS.fetch_add(1, Ordering::Relaxed);
@@ -146,19 +154,12 @@ pub fn handle_xsimg_protocol(request: &Request) -> Response<Vec<u8>> {
     ACTIVE_DOWNLOADS.fetch_sub(1, Ordering::Relaxed);
 
     match result {
-        Ok(bytes) => Response::builder()
-            .status(200)
-            .header("Content-Type", "image/jpeg")
-            .header("Cache-Control", "max-age=86400")
-            .body(bytes)
-            .unwrap(),
-        Err(_) => Response::builder()
-            .status(404)
-            .body(Vec::new())
-            .unwrap(),
+        Ok(bytes) => Ok(make_response(200, Some("image/jpeg"), bytes)),
+        Err(_) => Ok(make_response(404, None, Vec::new())),
     }
 }
 
+/// 极简 percent-decode，用于解析 query 中的 url 参数
 fn percent_decode(input: &str) -> Option<String> {
     let mut result = Vec::new();
     let mut bytes = input.bytes();
