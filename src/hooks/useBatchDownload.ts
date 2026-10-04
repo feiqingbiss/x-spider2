@@ -19,6 +19,7 @@ import {
   TIMEOUT_MS,
   WAIT_CREATION_TASKS_MAX_MS,
   isRateLimitError,
+  parseUsernames,
   shuffleArray,
   userFriendlyError,
   withTimeout,
@@ -29,12 +30,6 @@ export interface UseBatchDownloadOptions {
   onFinished?: () => Promise<void> | void;
 }
 
-/**
- * 封装"一键批量下载"的完整流程。
- *
- * ✅ 关键修复：isBatchRunning 和 AbortController 提升到 Zustand store，
- *    避免切换左侧菜单导致 Homepage 组件卸载后状态丢失。
- */
 export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   const { message, notification } = App.useApp();
 
@@ -202,7 +197,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   }, []);
 
   const cancelBatch = useCallback(() => {
-    // ✅ 从 store 读取 AbortController
     const ctrl = useDownloadStore.getState().batchAbortController;
     if (ctrl) {
       ctrl.abort();
@@ -211,7 +205,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   }, [message]);
 
   const batchDownload = useCallback(async () => {
-    // ✅ 从 store 检查是否已在运行
     if (useDownloadStore.getState().isBatchRunning) {
       message.warning('已有批量任务正在运行，请耐心等待');
       return;
@@ -230,15 +223,9 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
       } catch (e) {
         // ignore
       }
-      let usernames = content
-        .split('\n')
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
+
+      // ✅ 归一化 + 去重
+      let usernames = parseUsernames(content);
 
       if (usernames.length === 0) {
         message.warning('名单为空，请先添加用户');
@@ -247,7 +234,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
 
       usernames = shuffleArray(usernames);
 
-      // ✅ 写入 store，切换路由也不丢失
       setIsBatchRunning(true);
       const ctrl = new AbortController();
       setBatchAbortController(ctrl);
@@ -355,7 +341,6 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
       window.log.error('批量下载失败', err);
       message.error(`批量下载失败：${err?.message || '未知错误'}`);
     } finally {
-      // ✅ 清理全局状态
       setBatchAbortController(null);
       setBatchProgress(null);
       setIsBatchRunning(false);

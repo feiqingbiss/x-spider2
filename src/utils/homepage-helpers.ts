@@ -91,3 +91,26 @@ export function cleanUsername(input: string): string {
   }
   return text;
 }
+
+/**
+ * ✅ 归一化用户名为小写形式。
+ * Twitter 的 screenName 是大小写不敏感的（yukimurayy2 和 YukimuraYY2 是同一个人），
+ * 所有需要去重、比较、持久化的场景都使用此函数。
+ */
+export function normalizeUsername(input: string): string {
+  const cleaned = cleanUsername(input);
+  return cleaned.toLowerCase();
+}
+
+/**
+ * ✅ 从原始文本（名单文件内容）解析出归一化、去重后的用户名列表。
+ * 用于所有读取 search-user-name.txt 的场景。
+ */
+export function parseUsernames(rawText: string): string[] {
+  if (!rawText) return [];
+  const names = rawText
+    .split('\n')
+    .map((line) => normalizeUsername(line))
+    .filter((n) => n.length > 0);
+  return Array.from(new Set(names));
+}

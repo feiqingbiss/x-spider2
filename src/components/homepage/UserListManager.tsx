@@ -9,6 +9,7 @@ import {
 import { path, fs, shell } from '@tauri-apps/api';
 import { useSettingsStore } from '../../stores/settings';
 import { FixedSizeList } from 'react-window';
+import { normalizeUsername, parseUsernames } from '../../utils/homepage-helpers';
 
 interface Props {
   visible: boolean;
@@ -37,16 +38,8 @@ export const UserListManager: React.FC<Props> = ({
     try {
       const filePath = await getListFilePath();
       const content = await fs.readTextFile(filePath);
-      const lines = content.split('\n');
-      const names = lines
-        .map((line) =>
-          line
-            .replace(/^https?:\/\/x\.com\/?/i, '')
-            .replace(/^@/, '')
-            .trim(),
-        )
-        .filter((n) => n.length > 0);
-      setUsers(names);
+      // ✅ 归一化 + 去重
+      setUsers(parseUsernames(content));
     } catch (e) {
       setUsers([]);
     }
@@ -54,11 +47,20 @@ export const UserListManager: React.FC<Props> = ({
 
   useEffect(() => {
     if (visible) fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   const saveUsers = async (newUsers: string[]) => {
     const filePath = await getListFilePath();
-    const content = newUsers.map((u) => `https://x.com/${u}`).join('\n');
+    // ✅ 归一化 + 去重，保证文件不会出现重复
+    const uniqueUsers = Array.from(
+      new Set(
+        newUsers
+          .map((u) => normalizeUsername(u))
+          .filter((n) => n.length > 0),
+      ),
+    );
+    const content = uniqueUsers.map((u) => `https://x.com/${u}`).join('\n');
     await fs.writeTextFile(filePath, content);
     onChanged?.();
   };
@@ -72,15 +74,8 @@ export const UserListManager: React.FC<Props> = ({
     }
   };
 
-  const extractUsername = (input: string): string => {
-    return input
-      .trim()
-      .replace(/^@/, '')
-      .replace(/^https?:\/\/x\.com\/?/i, '');
-  };
-
   const handleAdd = async () => {
-    const name = extractUsername(newUser);
+    const name = normalizeUsername(newUser);
     if (!name) {
       message.warning('请输入有效的用户名');
       return;
@@ -101,13 +96,13 @@ export const UserListManager: React.FC<Props> = ({
     await saveUsers(newList);
     setUsers(newList);
     message.success(`已移除 ${name}`);
-    if (extractUsername(newUser) === name) {
+    if (normalizeUsername(newUser) === name) {
       setNewUser('');
     }
   };
 
   const handleDeleteByInput = async () => {
-    const name = extractUsername(newUser);
+    const name = normalizeUsername(newUser);
     if (!name) {
       message.warning('请输入要删除的用户名');
       return;
