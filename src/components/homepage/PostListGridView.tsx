@@ -1,5 +1,6 @@
 /* eslint-disable react/prop-types */
 import { LoadingOutlined, PictureOutlined } from '@ant-design/icons';
+import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
 import { App } from 'antd';
 import dayjs from 'dayjs';
 import * as R from 'ramda';
@@ -14,26 +15,58 @@ import { buildPostUrl } from '../../twitter/url';
 import { InfiniteScroll } from '../InfiniteScroll';
 import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 
-// ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
+// ✅ 限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
 
-// ✅ 统一走后端代理的缩略图组件（方案 B）
-//   所有图片请求都通过 xsimg:// 协议发给 Rust 后端，
-//   Rust 读取软件内配置的代理下载并缓存到 %LOCALAPPDATA%\x-spider\image-cache。
-//   这样 WebView2 的 Default\Cache 不再存图片，只有一份图片缓存。
+/**
+ * 缩略图组件：调用 Rust IPC 命令 download_image_to_cache，
+ * Rust 端读取软件内配置的代理下载图片并缓存到本地，返回本地路径。
+ * 前端用 convertFileSrc 加载本地文件。
+ */
 const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
   url,
   mediaId,
 }) => {
-  const [hasError, setHasError] = useState(false);
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [imgSrc, setImgSrc] = useState<string>('');
 
-  // 如果 API 没返回 url，用 mediaId 拼接官方备用地址
-  let finalUrl = url;
-  if (!finalUrl && mediaId) {
-    finalUrl = `https://pbs.twimg.com/media/${mediaId}?format=jpg&name=small`;
-  }
+  useEffect(() => {
+    let cancelled = false;
 
-  if (!finalUrl || hasError) {
+    // 组装预览图 URL
+    let finalUrl = url;
+    if (!finalUrl && mediaId) {
+      finalUrl = `https://pbs.twimg.com/media/${mediaId}?format=jpg&name=small`;
+    }
+    if (!finalUrl) {
+      setStatus('error');
+      return;
+    }
+    const previewUrl = finalUrl.includes('?')
+      ? finalUrl
+      : `${finalUrl}?format=jpg&name=small`;
+
+    setStatus('loading');
+    setImgSrc('');
+
+    invoke<string>('download_image_to_cache', { url: previewUrl })
+      .then((localPath) => {
+        if (cancelled) return;
+        setImgSrc(convertFileSrc(localPath));
+        setStatus('success');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('[Thumbnail] 加载失败', err);
+        setStatus('error');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url, mediaId]);
+
+  if (status === 'error') {
     return (
       <div className="w-full h-full bg-gray-100 flex flex-col items-center justify-center text-gray-400 text-xs">
         <PictureOutlined className="text-2xl mb-1 opacity-50" />
@@ -42,23 +75,20 @@ const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
     );
   }
 
-  // 确保是预览小图而非原图
-  const previewUrl = finalUrl.includes('?')
-    ? finalUrl
-    : `${finalUrl}?format=jpg&name=small`;
-
-  // Windows 下 Tauri 自定义协议被映射为 http://<scheme>.localhost
-  const isWindows = navigator.userAgent.includes('Windows');
-  const protocolBase = isWindows ? 'http://xsimg.localhost' : 'xsimg://localhost';
-  const src = `${protocolBase}/?url=${encodeURIComponent(previewUrl)}`;
+  if (status === 'loading' || !imgSrc) {
+    return (
+      <div className="w-full h-full bg-gray-200 animate-pulse flex items-center justify-center text-gray-400 text-xs">
+        <span>加载中...</span>
+      </div>
+    );
+  }
 
   return (
     <img
       alt="推文图片"
-      src={src}
-      loading="lazy"
+      src={imgSrc}
       className="object-cover w-full h-full transform transition-transform group-hover:scale-105"
-      onError={() => setHasError(true)}
+      onError={() => setStatus('error')}
     />
   );
 };
@@ -116,9 +146,8 @@ export const PostListGridView: React.FC = () => {
 
   const isMediaTruncated = fullMediaList.length > MAX_RENDER_MEDIA;
 
-  // ✅ 只负责"加载更多"，不再做首次加载
+  // ✅ 只负责"加载更多"
   const loadMore = useCallback(async () => {
-    // 如果已经达到渲染上限，不再加载更多（避免内存暴涨）
     if (isMediaTruncated) return;
 
     const state = useHomepageStore.getState();
@@ -142,7 +171,6 @@ export const PostListGridView: React.FC = () => {
     };
   }, [loadMore, isMediaTruncated]);
 
-  // ✅ 只有首次数据就绪后，才让 InfiniteScroll 接管滚动加载
   const readyForInfiniteScroll = !!postList.list;
 
   return (
@@ -197,9 +225,12 @@ export const PostListGridView: React.FC = () => {
           };
 
           return (
-            <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
+            <li
+              tabIndex={0}
+              key={media.id}
+              className="relative h-[12rem] overflow-hidden bg-white group"
+            >
               <div className="h-full">
-                {/* ✅ 全部走后端代理加载缩略图 */}
                 <MediaThumbnail url={media.url} mediaId={media.id} />
 
                 {media.type === MediaType.Video && (
@@ -230,14 +261,19 @@ export const PostListGridView: React.FC = () => {
           );
         })}
         {postList.loading && mediaList.length > 0 && !isMediaTruncated && (
-          <li className="h-[15rem] flex items-center justify-center bg-white" tabIndex={0}>
-            <LoadingOutlined className="text-6xl text-ant-color-primary" aria-hidden />
+          <li
+            className="h-[15rem] flex items-center justify-center bg-white"
+            tabIndex={0}
+          >
+            <LoadingOutlined
+              className="text-6xl text-ant-color-primary"
+              aria-hidden
+            />
             <span className="sr-only">加载更多图片中</span>
           </li>
         )}
       </ul>
 
-      {/* ✅ 达到渲染上限时的提示 */}
       {isMediaTruncated && (
         <div className="mt-4 text-sm text-center text-orange-500 font-bold" role="alert">
           为保证流畅度，仅渲染前 {MAX_RENDER_MEDIA} 个媒体（共 {fullMediaList.length} 个）。

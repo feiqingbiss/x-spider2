@@ -52,12 +52,10 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .register_uri_scheme_protocol("xsimg", |_app, request| {
-            image_proxy::handle_xsimg_protocol(request)
-        })
         .invoke_handler(tauri::generate_handler![
           network::network_fetch,
           image::generate_thumbnail,
+          image_proxy::download_image_to_cache,
         ])
         .setup(|app| {
             let handle = app.handle();
