@@ -1,10 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createTauriFileStorage } from './persist/tauri-file-storage';
-import { writeTextFile, readTextFile } from '@tauri-apps/api/fs';
-import { appDataDir, join } from '@tauri-apps/api/path';
-import { useSettingsStore } from './settings';
-import { normalizeUsername, parseUsernames } from '../utils/homepage-helpers';
+import { normalizeUsername } from '../utils/homepage-helpers';
 
 export interface AppStateStore {
   cookieString: string;
@@ -12,7 +9,6 @@ export interface AppStateStore {
   searchHistory: string[];
   addSearchHistory: (keyword: string) => void;
   clearSearchHistory: () => void;
-  importHistoryFromFile: () => Promise<void>;
   latestVersion: string;
   latestUrl: string;
   lastCheckUpdateTime: number;
@@ -21,41 +17,10 @@ export interface AppStateStore {
   setLatestUrl: (url: string) => void;
   forceFullScan: boolean;
   setForceFullScan: (v: boolean) => void;
+  // ✅ 名单变更信号：任何对 search-user-name.txt 的写操作后 +1，用于触发 UI 刷新
+  userListRevision: number;
+  bumpUserListRevision: () => void;
 }
-
-async function getListFilePath(): Promise<string> {
-  const settings = useSettingsStore.getState();
-  const baseDir = settings.download.saveDirBase || (await appDataDir());
-  return await join(baseDir, 'search-user-name.txt');
-}
-
-const syncHistoryToFile = async (names: string[]) => {
-  try {
-    if (names.length === 0) return;
-    const filePath = await getListFilePath();
-    let existingContent = '';
-    try {
-      existingContent = await readTextFile(filePath);
-    } catch (e) {
-      // ignore
-    }
-
-    // ✅ 读取已有名单时归一化 + 去重
-    const existingNames = parseUsernames(existingContent);
-    const newNames = names
-      .map((n) => normalizeUsername(n))
-      .filter((n) => n.length > 0);
-    const combined = Array.from(new Set([...existingNames, ...newNames]));
-
-    let content = '';
-    for (const name of combined) {
-      content += `https://x.com/${name}\n`;
-    }
-    await writeTextFile(filePath, content.trim());
-  } catch (err) {
-    console.error('[Sync] Error:', err);
-  }
-};
 
 export const useAppStateStore = create(
   persist<AppStateStore>(
@@ -63,8 +28,10 @@ export const useAppStateStore = create(
       cookieString: '',
       setCookieString: (cookieString) => set({ cookieString }),
       searchHistory: [],
+
+      // ✅ 只更新搜索历史（内存 + persist 到 app-state.json）
+      //    不写入 search-user-name.txt
       addSearchHistory: (keyword) => {
-        // ✅ 归一化为小写
         const targetKeyword = normalizeUsername(keyword);
         if (!targetKeyword) return;
         let history = [...get().searchHistory];
@@ -73,22 +40,10 @@ export const useAppStateStore = create(
         history.unshift(targetKeyword);
         if (history.length > 10) history = history.slice(0, 10);
         set({ searchHistory: history });
-        syncHistoryToFile([targetKeyword]);
       },
+
       clearSearchHistory: () => set({ searchHistory: [] }),
-      importHistoryFromFile: async () => {
-        try {
-          const filePath = await getListFilePath();
-          const content = await readTextFile(filePath);
-          // ✅ 归一化 + 去重
-          const importedNames = parseUsernames(content);
-          set({
-            searchHistory: importedNames.slice(0, 10),
-          });
-        } catch (err) {
-          // ignore
-        }
-      },
+
       latestVersion: PACKAGE_JSON_VERSION,
       lastCheckUpdateTime: 0,
       latestUrl: '',
@@ -97,6 +52,10 @@ export const useAppStateStore = create(
       setLatestUrl: (url) => set({ latestUrl: url }),
       forceFullScan: false,
       setForceFullScan: (v) => set({ forceFullScan: v }),
+
+      userListRevision: 0,
+      bumpUserListRevision: () =>
+        set((s) => ({ userListRevision: s.userListRevision + 1 })),
     }),
     {
       name: 'app-state',

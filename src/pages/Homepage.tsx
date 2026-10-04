@@ -21,7 +21,6 @@ export const Homepage: React.FC = () => {
   const [manageModalVisible, setManageModalVisible] = useState(false);
   const [userListCount, setUserListCount] = useState(0);
 
-  // ✅ 用原子 selector，避免每次 state 变化都返回新对象
   const keyword = useHomepageStore((s) => s.keyword);
   const setKeyword = useHomepageStore((s) => s.setKeyword);
   const userInfo = useHomepageStore((s) => s.userInfo);
@@ -31,6 +30,8 @@ export const Homepage: React.FC = () => {
   const cookieString = useAppStateStore((s) => s.cookieString);
   const forceFullScan = useAppStateStore((s) => s.forceFullScan);
   const setForceFullScan = useAppStateStore((s) => s.setForceFullScan);
+  // ✅ 监听名单变更信号
+  const userListRevision = useAppStateStore((s) => s.userListRevision);
 
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
@@ -39,7 +40,6 @@ export const Homepage: React.FC = () => {
       const baseDir = saveDirBase || (await path.appDataDir());
       const filePath = await path.join(baseDir, 'search-user-name.txt');
       const content = await fs.readTextFile(filePath);
-      // ✅ 归一化 + 去重
       return parseUsernames(content);
     } catch {
       return [];
@@ -51,12 +51,13 @@ export const Homepage: React.FC = () => {
     setUserListCount(names.length);
   }, [readUsernamesFromFile]);
 
+  // ✅ 依赖 userListRevision：DownloadController 添加用户后会自动刷新
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchUserListCount();
     }, 200);
     return () => clearTimeout(timer);
-  }, [fetchUserListCount]);
+  }, [fetchUserListCount, userListRevision]);
 
   const { startSearch } = useUserSearch();
   const { isBatchRunning, batchProgress, batchDownload, cancelBatch } =

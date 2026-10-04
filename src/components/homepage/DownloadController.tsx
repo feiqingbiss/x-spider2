@@ -7,10 +7,12 @@ import MediaType from '../../enums/MediaType';
 import { DownloadFilter } from '../../interfaces/DownloadFilter';
 import { useDownloadStore } from '../../stores/download';
 import { useHomepageStore } from '../../stores/homepage';
+import { useSettingsStore } from '../../stores/settings';
+import { useAppStateStore } from '../../stores/app-state';
+import { addUserToDownloadList } from '../../utils/homepage-helpers';
 
 export const DownloadController: React.FC = () => {
   const { message } = App.useApp();
-  // ✅ 优化：useShallow
   const { filter, setFilter, user } = useHomepageStore(
     useShallow((s) => ({
       filter: s.filter,
@@ -19,6 +21,8 @@ export const DownloadController: React.FC = () => {
     })),
   );
   const createCreationTask = useDownloadStore((s) => s.createCreationTask);
+  const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
+  const bumpUserListRevision = useAppStateStore((s) => s.bumpUserListRevision);
 
   const onStartDownload = async () => {
     if (!user) {
@@ -32,6 +36,18 @@ export const DownloadController: React.FC = () => {
     }
 
     try {
+      // ✅ 用户主动点"开始下载"，把该用户加入下载名单（去重）
+      if (user.screenName) {
+        const added = await addUserToDownloadList(
+          user.screenName,
+          saveDirBase,
+        );
+        if (added) {
+          // 通知 Homepage 重新读取名单计数
+          bumpUserListRevision();
+        }
+      }
+
       createCreationTask(user, filter);
       message.success('已成功创建下载任务，请到下载管理页查看');
     } catch (err: any) {

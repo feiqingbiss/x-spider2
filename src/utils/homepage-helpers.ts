@@ -1,3 +1,5 @@
+import { fs, path } from '@tauri-apps/api';
+
 // Homepage 相关常量
 export const TIMEOUT_MS = 60000;
 export const BATCH_SIZE = 2;
@@ -8,6 +10,7 @@ export const ROUND_DELAY_MS = 30000;
 export const RETRY_ROUNDS = 2;
 export const WAIT_CREATION_TASKS_MAX_MS = 60000;
 export const FAILED_USERS_FILE = 'failed_users.txt';
+export const USER_LIST_FILE = 'search-user-name.txt';
 
 export function userFriendlyError(err: any): string {
   const msg = (err?.message || err?.toString() || '').toLowerCase();
@@ -93,9 +96,8 @@ export function cleanUsername(input: string): string {
 }
 
 /**
- * ✅ 归一化用户名为小写形式。
- * Twitter 的 screenName 是大小写不敏感的（yukimurayy2 和 YukimuraYY2 是同一个人），
- * 所有需要去重、比较、持久化的场景都使用此函数。
+ * 归一化用户名为小写形式。
+ * Twitter 的 screenName 是大小写不敏感的，所有比较、持久化都使用此函数。
  */
 export function normalizeUsername(input: string): string {
   const cleaned = cleanUsername(input);
@@ -103,8 +105,7 @@ export function normalizeUsername(input: string): string {
 }
 
 /**
- * ✅ 从原始文本（名单文件内容）解析出归一化、去重后的用户名列表。
- * 用于所有读取 search-user-name.txt 的场景。
+ * 从原始文本（名单文件内容）解析出归一化、去重后的用户名列表。
  */
 export function parseUsernames(rawText: string): string[] {
   if (!rawText) return [];
@@ -113,4 +114,45 @@ export function parseUsernames(rawText: string): string[] {
     .map((line) => normalizeUsername(line))
     .filter((n) => n.length > 0);
   return Array.from(new Set(names));
+}
+
+/**
+ * 获取名单文件的完整路径。
+ */
+export async function getUserListFilePath(
+  saveDirBase: string,
+): Promise<string> {
+  const baseDir = saveDirBase || (await path.appDataDir());
+  return await path.join(baseDir, USER_LIST_FILE);
+}
+
+/**
+ * 把用户加入下载名单（search-user-name.txt），并归一化去重。
+ * 返回 true 表示新增了用户，false 表示用户已存在或无效。
+ */
+export async function addUserToDownloadList(
+  screenName: string,
+  saveDirBase: string,
+): Promise<boolean> {
+  const normalized = normalizeUsername(screenName);
+  if (!normalized) return false;
+
+  const filePath = await getUserListFilePath(saveDirBase);
+
+  let content = '';
+  try {
+    content = await fs.readTextFile(filePath);
+  } catch {
+    // 文件不存在，content 保持空串
+  }
+
+  const existing = parseUsernames(content);
+  if (existing.includes(normalized)) {
+    return false;
+  }
+
+  const combined = [...existing, normalized];
+  const newContent = combined.map((n) => `https://x.com/${n}`).join('\n');
+  await fs.writeTextFile(filePath, newContent);
+  return true;
 }
