@@ -44,9 +44,16 @@ export interface DownloadStore {
   batchProgress: BatchProgress | null;
   setBatchProgress: (progress: BatchProgress | null) => void;
 
-  // ✅ 新增：批量下载的全局运行状态，避免切换路由时丢失
+  // ✅ 批量下载的全局运行状态
   isBatchRunning: boolean;
   setIsBatchRunning: (v: boolean) => void;
   batchAbortController: AbortController | null;
   setBatchAbortController: (ctrl: AbortController | null) => void;
+
+  // ✅ 本次下载会话涉及的用户集合（用于右环分母）
+  //    - 单次下载：{ screenName }
+  //    - 批量下载：整个名单的用户
+  //    - 会话进行中时追加；会话结束后重置
+  sessionUserNames: string[];
+  addSessionUsers: (names: string[]) => void;
 }

@@ -17,9 +17,12 @@ export interface AppStateStore {
   setLatestUrl: (url: string) => void;
   forceFullScan: boolean;
   setForceFullScan: (v: boolean) => void;
-  // ✅ 名单变更信号：任何对 search-user-name.txt 的写操作后 +1，用于触发 UI 刷新
+  // ✅ 名单变更信号：任何对 search-user-name.txt 的写操作后 +1
   userListRevision: number;
   bumpUserListRevision: () => void;
+  // ✅ 名单用户总数，用于下载管理的右环显示
+  userListTotal: number;
+  setUserListTotal: (n: number) => void;
 }
 
 export const useAppStateStore = create(
@@ -29,8 +32,6 @@ export const useAppStateStore = create(
       setCookieString: (cookieString) => set({ cookieString }),
       searchHistory: [],
 
-      // ✅ 只更新搜索历史（内存 + persist 到 app-state.json）
-      //    不写入 search-user-name.txt
       addSearchHistory: (keyword) => {
         const targetKeyword = normalizeUsername(keyword);
         if (!targetKeyword) return;
@@ -56,6 +57,9 @@ export const useAppStateStore = create(
       userListRevision: 0,
       bumpUserListRevision: () =>
         set((s) => ({ userListRevision: s.userListRevision + 1 })),
+
+      userListTotal: 0,
+      setUserListTotal: (n) => set({ userListTotal: n }),
     }),
     {
       name: 'app-state',

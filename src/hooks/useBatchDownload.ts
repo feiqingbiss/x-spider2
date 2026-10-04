@@ -33,7 +33,6 @@ export interface UseBatchDownloadOptions {
 export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
   const { message, notification } = App.useApp();
 
-  // ✅ 从 store 读取全局状态
   const isBatchRunning = useDownloadStore((s) => s.isBatchRunning);
   const setIsBatchRunning = useDownloadStore((s) => s.setIsBatchRunning);
   const setBatchAbortController = useDownloadStore(
@@ -42,6 +41,7 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
 
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
+  const addSessionUsers = useDownloadStore((s) => s.addSessionUsers);
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
   const cookieString = useAppStateStore((s) => s.cookieString);
   const filter = useHomepageStore((s) => s.filter);
@@ -224,13 +224,15 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
         // ignore
       }
 
-      // ✅ 归一化 + 去重
       let usernames = parseUsernames(content);
 
       if (usernames.length === 0) {
         message.warning('名单为空，请先添加用户');
         return;
       }
+
+      // ✅ 计入本次下载会话
+      addSessionUsers(usernames);
 
       usernames = shuffleArray(usernames);
 
@@ -356,6 +358,7 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
     setBatchProgress,
     setIsBatchRunning,
     setBatchAbortController,
+    addSessionUsers,
     opts,
   ]);
 

@@ -30,8 +30,9 @@ export const Homepage: React.FC = () => {
   const cookieString = useAppStateStore((s) => s.cookieString);
   const forceFullScan = useAppStateStore((s) => s.forceFullScan);
   const setForceFullScan = useAppStateStore((s) => s.setForceFullScan);
-  // ✅ 监听名单变更信号
   const userListRevision = useAppStateStore((s) => s.userListRevision);
+  // ✅ 同步到全局，供下载管理页使用
+  const setUserListTotal = useAppStateStore((s) => s.setUserListTotal);
 
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
 
@@ -49,9 +50,9 @@ export const Homepage: React.FC = () => {
   const fetchUserListCount = useCallback(async () => {
     const names = await readUsernamesFromFile();
     setUserListCount(names.length);
-  }, [readUsernamesFromFile]);
+    setUserListTotal(names.length);
+  }, [readUsernamesFromFile, setUserListTotal]);
 
-  // ✅ 依赖 userListRevision：DownloadController 添加用户后会自动刷新
   useEffect(() => {
     const timer = setTimeout(() => {
       fetchUserListCount();

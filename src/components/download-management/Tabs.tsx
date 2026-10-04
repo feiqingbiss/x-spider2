@@ -39,11 +39,6 @@ function phaseText(t: CreationTask): string {
   }
 }
 
-/**
- * 左环的百分比：基于"经过了多少 tick"来推演视觉进度。
- * 每 tick = 200ms，不同阶段对应不同上限。
- * 目的是给用户"正在工作"的视觉反馈，即使真实进度无法精确获知。
- */
 function getPhasePercent(
   phase: CreationPhase | undefined,
   tick: number,
@@ -52,16 +47,12 @@ function getPhasePercent(
     case 'waiting':
       return 0;
     case 'precheck':
-      // 3 秒内到 10%
       return Math.min(10, Math.round(tick * 0.7));
     case 'index':
-      // 8 秒内从 10% 到 50%
       return Math.min(50, Math.round(10 + tick * 1));
     case 'tweets':
-      // 8 秒内从 50% 到 90%
       return Math.min(90, Math.round(50 + tick * 1));
     case 'creating':
-      // 3 秒内从 90% 到 95%
       return Math.min(95, Math.round(90 + tick * 0.4));
     case 'done':
       return 100;
@@ -86,8 +77,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     creationTasks,
     batchProgress,
     tabCounts,
-    userProgress,
+    doneUsers,
     activeCreation,
+    sessionUserNames,
   } = useDownloadStore(
     useShallow((s) => {
       const counts: Record<string, number> = {};
@@ -98,10 +90,17 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         ).length;
       }
 
-      // 按用户聚合：一个用户的所有任务都是 complete/error 时才算该用户完成
+      // 正在创建任务的用户集合
+      const creatingSet = new Set<string>();
+      for (const t of s.creationTasks) {
+        if (t.user?.screenName) creatingSet.add(t.user.screenName.toLowerCase());
+      }
+
+      // 按用户聚合 downloadTasks
       const userMap = new Map<string, { total: number; done: number }>();
       for (const t of s.downloadTasks) {
-        const u = t.post.user?.screenName || '__unknown__';
+        const u = t.post.user?.screenName?.toLowerCase();
+        if (!u) continue;
         let e = userMap.get(u);
         if (!e) {
           e = { total: 0, done: 0 };
@@ -112,11 +111,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           e.done++;
         }
       }
-      let totalUsers = 0;
-      let doneUsers = 0;
-      for (const [, e] of userMap) {
-        totalUsers++;
-        if (e.total > 0 && e.done >= e.total) doneUsers++;
+
+      // 只在 session 用户范围内统计已完成用户
+      const sessionSet = new Set(s.sessionUserNames);
+      let doneUsersCount = 0;
+      for (const name of sessionSet) {
+        if (creatingSet.has(name)) continue;
+        const e = userMap.get(name);
+        if (e && e.total > 0 && e.done >= e.total) {
+          doneUsersCount++;
+        }
       }
 
       const active = s.creationTasks.find((t) => t.status === 'active');
@@ -127,8 +131,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         creationTasks: s.creationTasks,
         batchProgress: s.batchProgress,
         tabCounts: counts,
-        userProgress: { totalUsers, doneUsers },
+        doneUsers: doneUsersCount,
         activeCreation: active,
+        sessionUserNames: s.sessionUserNames,
       };
     }),
   );
@@ -143,7 +148,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     (tab) => tab.name === currentTab,
   )?.children;
 
-  // ============ 左环：预检/索引的时间驱动进度 ============
+  // ============ 左环：预检/索引 ============
   const [leftTick, setLeftTick] = useState(0);
 
   useEffect(() => {
@@ -196,23 +201,23 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [creatingCount]);
 
-  // ============ 右环：用户级别的下载完成进度 ============
+  // ============ 右环：本次会话已完成用户 / 会话总用户 ============
+  const sessionTotal = sessionUserNames.length;
   const rightRing = useMemo(() => {
-    const { totalUsers, doneUsers } = userProgress;
-    const percent =
-      totalUsers > 0 ? Math.round((doneUsers / totalUsers) * 100) : 100;
-    const isActive = totalUsers > 0 && doneUsers < totalUsers;
+    const total = sessionTotal;
+    const percent = total > 0 ? Math.round((doneUsers / total) * 100) : 100;
+    const isActive = total > 0 && doneUsers < total;
     return {
       percent,
       strokeColor: isActive ? '#1d9bf0' : '#52c41a',
       status: (isActive ? 'active' : 'normal') as 'active' | 'normal',
       label: '下载进度',
       tooltip:
-        totalUsers > 0
-          ? `${doneUsers} / ${totalUsers} 个用户完成`
+        total > 0
+          ? `${doneUsers} / ${total} 个用户完成`
           : '暂无下载任务',
     };
-  }, [userProgress]);
+  }, [doneUsers, sessionTotal]);
 
   // ============ 右侧文字区 ============
   const textLine1 = useMemo(() => {
@@ -240,7 +245,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-4 mb-3 flex-wrap">
-        {/* Tab 卡片 */}
         <ul role="tablist" className="flex gap-2 shrink-0">
           {tabs.map((tab) => {
             const active = tab.name === currentTab;
@@ -283,9 +287,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           })}
         </ul>
 
-        {/* 三个圆环 */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* 左环：预检/索引（时间驱动动画） */}
           <div className="flex flex-col items-center" title={leftRing.tooltip}>
             <Progress
               type="circle"
@@ -305,7 +307,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             </span>
           </div>
 
-          {/* 中环：创建任务数量 */}
           <div
             className="flex flex-col items-center"
             title={middleRing.tooltip}
@@ -328,7 +329,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             </span>
           </div>
 
-          {/* 右环：用户下载完成比例 */}
           <div className="flex flex-col items-center" title={rightRing.tooltip}>
             <Progress
               type="circle"
@@ -349,7 +349,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           </div>
         </div>
 
-        {/* 右侧文字区 */}
         {showTextBlock ? (
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-800 truncate">

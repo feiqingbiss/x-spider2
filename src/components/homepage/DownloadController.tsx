@@ -21,6 +21,7 @@ export const DownloadController: React.FC = () => {
     })),
   );
   const createCreationTask = useDownloadStore((s) => s.createCreationTask);
+  const addSessionUsers = useDownloadStore((s) => s.addSessionUsers);
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
   const bumpUserListRevision = useAppStateStore((s) => s.bumpUserListRevision);
 
@@ -36,16 +37,14 @@ export const DownloadController: React.FC = () => {
     }
 
     try {
-      // ✅ 用户主动点"开始下载"，把该用户加入下载名单（去重）
       if (user.screenName) {
-        const added = await addUserToDownloadList(
-          user.screenName,
-          saveDirBase,
-        );
+        // ✅ 把该用户加入下载名单（去重）
+        const added = await addUserToDownloadList(user.screenName, saveDirBase);
         if (added) {
-          // 通知 Homepage 重新读取名单计数
           bumpUserListRevision();
         }
+        // ✅ 计入本次下载会话
+        addSessionUsers([user.screenName]);
       }
 
       createCreationTask(user, filter);

@@ -436,11 +436,37 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
   batchProgress: null,
   setBatchProgress: (p) => set({ batchProgress: p }),
 
-  // ✅ 新增：批量下载的全局运行状态
+  // ✅ 批量下载的全局运行状态
   isBatchRunning: false,
   setIsBatchRunning: (v) => set({ isBatchRunning: v }),
   batchAbortController: null,
   setBatchAbortController: (ctrl) => set({ batchAbortController: ctrl }),
+
+  // ✅ 本次下载会话涉及的用户集合
+  sessionUserNames: [],
+  addSessionUsers: (names) => {
+    const s = get();
+    const normalized = names
+      .map((n) => (n || '').toLowerCase())
+      .filter((n) => n.length > 0);
+    if (normalized.length === 0) return;
+
+    // 判断当前会话是否已结束
+    const hasPendingCreation = s.creationTasks.length > 0;
+    const hasPendingDownload = s.downloadTasks.some(
+      (t) => t.status !== 'complete' && t.status !== 'error',
+    );
+    const sessionActive = hasPendingCreation || hasPendingDownload;
+
+    if (sessionActive) {
+      // 会话进行中：追加（去重）
+      const combined = Array.from(new Set([...s.sessionUserNames, ...normalized]));
+      set({ sessionUserNames: combined });
+    } else {
+      // 会话已结束：重置为新会话
+      set({ sessionUserNames: Array.from(new Set(normalized)) });
+    }
+  },
 }));
 
 // ================= 自动同步（只查询视口内任务） =================
