@@ -1,8 +1,8 @@
 /* eslint-disable react/prop-types */
-import { Avatar } from 'antd';
 import React from 'react';
 import { TwitterUser } from '../../interfaces/TwitterUser';
 import { buildUserUrl } from '../../twitter/url';
+import { ProxyAvatar } from '../common/ProxyAvatar';
 
 export interface UserInfoCardProps {
   user: TwitterUser;
@@ -20,7 +20,7 @@ export const UserInfoCard: React.FC<UserInfoCardProps> = ({ user }) => {
         target="_blank"
         rel="noreferrer"
       >
-        <Avatar src={user.avatar} size={50} />
+        <ProxyAvatar src={user.avatar} size={50} />
         <div className="ml-3">
           <p className="text-base font-bold mb-0">
             {user.name || '未知用户'}

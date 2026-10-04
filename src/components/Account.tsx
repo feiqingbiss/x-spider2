@@ -10,9 +10,9 @@ import FormItem from 'antd/es/form/FormItem';
 import { useForm } from 'antd/es/form/Form';
 import { parseCookie, stringifyCookie } from '../utils/cookie';
 import clsx from 'clsx';
+import { ProxyAvatar } from './common/ProxyAvatar';
 
 export const Account: React.FC = memo(() => {
-  // ✅ 优化：使用 useShallow，避免返回新数组导致多余重渲染
   const [cookieString, setCookieString] = useAppStateStore(
     useShallow((state) => [state.cookieString, state.setCookieString]),
   );
@@ -104,7 +104,7 @@ export const Account: React.FC = memo(() => {
                 href={`https://twitter.com/${accountInfo.screenName}`}
                 rel="noreferrer"
               >
-                <Avatar size={50} src={accountInfo.avatar} alt="头像" />
+                <ProxyAvatar size={50} src={accountInfo.avatar} alt="头像" />
               </a>
               <div className="text-white mt-1 font-bold">
                 {accountInfo.screenName}

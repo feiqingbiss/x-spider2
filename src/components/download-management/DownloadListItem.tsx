@@ -7,6 +7,7 @@ import {
   FolderFilled,
   PauseOutlined,
 } from '@ant-design/icons';
+import { ProxyAvatar } from '../common/ProxyAvatar';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { invoke } from '@tauri-apps/api/tauri';
 import { App, Avatar, Progress } from 'antd';
@@ -462,7 +463,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             rel="noreferrer"
             className="text-xs flex items-center space-x-1 w-fit text-ant-color-text-secondary bg-gray-100 p-1 rounded-full pr-2 overflow-hidden"
           >
-            <Avatar src={t.post.user?.avatar} size={20} />
+            <ProxyAvatar src={t.post.user?.avatar} size={20} />
             <span>{t.post.user?.name || '未知用户'}</span>
             {t.post.user?.screenName && <span>@{t.post.user.screenName}</span>}
           </a>
