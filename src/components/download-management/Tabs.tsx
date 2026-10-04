@@ -17,7 +17,8 @@ export interface TabsProps {
   tabs: Tab[];
 }
 
-const RING_SIZE = 44;
+// ✅ 三个圆环统一尺寸
+const RING_SIZE = 64;
 const RING_STROKE = 10;
 
 function phaseText(t: CreationTask): string {
@@ -90,13 +91,13 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         ).length;
       }
 
-      // 正在创建任务的用户集合
       const creatingSet = new Set<string>();
       for (const t of s.creationTasks) {
-        if (t.user?.screenName) creatingSet.add(t.user.screenName.toLowerCase());
+        if (t.user?.screenName) {
+          creatingSet.add(t.user.screenName.toLowerCase());
+        }
       }
 
-      // 按用户聚合 downloadTasks
       const userMap = new Map<string, { total: number; done: number }>();
       for (const t of s.downloadTasks) {
         const u = t.post.user?.screenName?.toLowerCase();
@@ -112,8 +113,9 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         }
       }
 
-      // 只在 session 用户范围内统计已完成用户
-      const sessionSet = new Set(s.sessionUserNames);
+      const sessionSet = new Set(
+        s.sessionUserNames.map((n) => n.toLowerCase()),
+      );
       let doneUsersCount = 0;
       for (const name of sessionSet) {
         if (creatingSet.has(name)) continue;
@@ -209,12 +211,14 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     const isActive = total > 0 && doneUsers < total;
     return {
       percent,
+      done: doneUsers,
+      total,
       strokeColor: isActive ? '#1d9bf0' : '#52c41a',
       status: (isActive ? 'active' : 'normal') as 'active' | 'normal',
       label: '下载进度',
       tooltip:
         total > 0
-          ? `${doneUsers} / ${total} 个用户完成`
+          ? `${doneUsers} / ${total} 个用户完成（${percent}%）`
           : '暂无下载任务',
     };
   }, [doneUsers, sessionTotal]);
@@ -287,7 +291,8 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           })}
         </ul>
 
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-4 shrink-0">
+          {/* 左环：预检/索引 */}
           <div className="flex flex-col items-center" title={leftRing.tooltip}>
             <Progress
               type="circle"
@@ -297,16 +302,17 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={leftRing.strokeColor}
               status={leftRing.status}
               format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">
+                <span className="text-[12px] font-bold text-gray-700">
                   {p}%
                 </span>
               )}
             />
-            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+            <span className="text-[10px] text-gray-500 mt-1 leading-none">
               {leftRing.label}
             </span>
           </div>
 
+          {/* 中环：正在创建的任务数量 */}
           <div
             className="flex flex-col items-center"
             title={middleRing.tooltip}
@@ -319,16 +325,17 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               strokeColor={middleRing.strokeColor}
               status={middleRing.status}
               format={() => (
-                <span className="text-[11px] font-bold text-gray-700">
+                <span className="text-[14px] font-bold text-gray-700">
                   {middleRing.count > 0 ? middleRing.count : ''}
                 </span>
               )}
             />
-            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+            <span className="text-[10px] text-gray-500 mt-1 leading-none">
               {middleRing.label}
             </span>
           </div>
 
+          {/* 右环：单行显示 已完成/总数 */}
           <div className="flex flex-col items-center" title={rightRing.tooltip}>
             <Progress
               type="circle"
@@ -337,13 +344,15 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
               percent={rightRing.percent}
               strokeColor={rightRing.strokeColor}
               status={rightRing.status}
-              format={(p) => (
-                <span className="text-[10px] font-bold text-gray-700">
-                  {p}%
+              format={() => (
+                <span className="text-[13px] font-bold text-gray-700 leading-none">
+                  {rightRing.total > 0
+                    ? `${rightRing.done}/${rightRing.total}`
+                    : '—'}
                 </span>
               )}
             />
-            <span className="text-[9px] text-gray-500 mt-0.5 leading-none">
+            <span className="text-[10px] text-gray-500 mt-1 leading-none">
               {rightRing.label}
             </span>
           </div>
