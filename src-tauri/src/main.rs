@@ -11,6 +11,9 @@ use tauri::Manager;
 
 const SINGLE_INSTANCE_PORT: u16 = 39123;
 
+// 图片缓存保留天数（超过自动清理）
+const IMAGE_CACHE_MAX_AGE_DAYS: u64 = 90;
+
 #[cfg(target_os = "windows")]
 fn kill_aria2c() {
     use std::os::windows::process::CommandExt;
@@ -49,6 +52,24 @@ fn main() {
 
     // 清理上次异常退出的残留 aria2c
     kill_aria2c();
+
+    // 后台异步清理过期图片缓存（不阻塞启动）
+    std::thread::spawn(|| {
+        // 稍作延迟，避免和启动时的其他 I/O 抢占资源
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        match image_proxy::cleanup_old_cache(IMAGE_CACHE_MAX_AGE_DAYS) {
+            Ok(0) => {}
+            Ok(n) => {
+                eprintln!(
+                    "[Cache] 已清理 {} 个超过 {} 天的图片缓存",
+                    n, IMAGE_CACHE_MAX_AGE_DAYS
+                );
+            }
+            Err(e) => {
+                eprintln!("[Cache] 清理图片缓存失败: {}", e);
+            }
+        }
+    });
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
