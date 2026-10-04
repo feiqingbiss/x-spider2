@@ -17,7 +17,10 @@ import { GridViewItemAction, GridViewItemActions } from './GridViewItemActions';
 // ✅ 紧急止血：限制最大渲染数量，防止 2000+ 媒体导致 DOM 爆炸
 const MAX_RENDER_MEDIA = 500;
 
-// ✅ 缩略图组件：优先走后端代理下载并缓存，失败时显示占位图
+// ✅ 统一走后端代理的缩略图组件（方案 B）
+//   所有图片请求都通过 xsimg:// 协议发给 Rust 后端，
+//   Rust 读取软件内配置的代理下载并缓存到 %LOCALAPPDATA%\x-spider\image-cache。
+//   这样 WebView2 的 Default\Cache 不再存图片，只有一份图片缓存。
 const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
   url,
   mediaId,
@@ -44,7 +47,7 @@ const MediaThumbnail: React.FC<{ url?: string; mediaId?: string }> = ({
     ? finalUrl
     : `${finalUrl}?format=jpg&name=small`;
 
-  // 通过 Tauri 自定义协议 xsimg:// 走后端代理下载图片
+  // Windows 下 Tauri 自定义协议被映射为 http://<scheme>.localhost
   const isWindows = navigator.userAgent.includes('Windows');
   const protocolBase = isWindows ? 'http://xsimg.localhost' : 'xsimg://localhost';
   const src = `${protocolBase}/?url=${encodeURIComponent(previewUrl)}`;
@@ -196,7 +199,7 @@ export const PostListGridView: React.FC = () => {
           return (
             <li tabIndex={0} key={media.id} className="relative h-[12rem] overflow-hidden bg-white group">
               <div className="h-full">
-                {/* ✅ 走后端代理加载缩略图 */}
+                {/* ✅ 全部走后端代理加载缩略图 */}
                 <MediaThumbnail url={media.url} mediaId={media.id} />
 
                 {media.type === MediaType.Video && (
