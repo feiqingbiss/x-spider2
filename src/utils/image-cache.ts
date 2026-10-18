@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
-import { path } from '@tauri-apps/api';
+import { fs, path } from '@tauri-apps/api';
 import { TwitterMedia } from '../interfaces/TwitterMedia';
 import { TwitterPost } from '../interfaces/TwitterPost';
 import { useSettingsStore } from '../stores/settings';
@@ -37,9 +37,8 @@ function createQueue(limit: number) {
   };
 }
 
-// ✅ 核心修复：分离网络和本地队列，避免本地生成图片卡死网络图片的加载
-const remoteQueue = createQueue(30); // 网络图片允许较高并发
-const localQueue = createQueue(4);   // 本地缩略图生成是 CPU/IO 密集型，限制低并发
+const remoteQueue = createQueue(30); 
+const localQueue = createQueue(4);   // ✅ 调整为 4 个并发，平衡性能和速度
 
 export function getRemoteThumbnail(url: string): Promise<string> {
   if (memoryCache.has(url)) return Promise.resolve(memoryCache.get(url)!);

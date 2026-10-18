@@ -7,7 +7,7 @@ import {
   FolderFilled,
   PauseOutlined,
 } from '@ant-design/icons';
-import { dialog, shell } from '@tauri-apps/api';
+import { shell } from '@tauri-apps/api';
 import { App, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useState } from 'react';
@@ -61,28 +61,40 @@ const ThumbnailArea = memo(
       return getCachedMediaThumbnail(mediaId) || '';
     });
 
+    // ✅ 核心重构：绝对优先网络，网络挂了才走本地
     useEffect(() => {
-      let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
-      if (!baseUrl) return;
-      const cleanUrl = baseUrl.split('?')[0];
-      const remoteUrl = `${cleanUrl}?format=jpg&name=small`;
+      // 如果已经有任何一个图了（比如从缓存命中了），直接跳过
+      if (remoteSrc || localSrc) return;
 
-      getRemoteThumbnail(remoteUrl)
-        .then((src) => { setRemoteSrc(src); })
-        .catch(() => {});
-    }, [task.gid]);
+      let cancelled = false;
 
-    useEffect(() => {
-      if (task.status !== AriaStatus.Complete || !task.dir || !task.fileName) return;
-      
-      getMediaThumbnail(task.media, task.post)
-        .then((res) => {
-          if (res.src) setLocalSrc(res.src);
-        })
-        .catch(() => {});
-    }, [task.gid, task.status]);
+      const load = async () => {
+        let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
+        if (!baseUrl) return;
+        const cleanUrl = baseUrl.split('?')[0];
+        const remoteUrl = `${cleanUrl}?format=jpg&name=small`;
 
-    const finalSrc = localSrc || remoteSrc;
+        try {
+          // 1. 优先请求极速的 CDN 网络图
+          const src = await getRemoteThumbnail(remoteUrl);
+          if (!cancelled) setRemoteSrc(src);
+          // 只要网络图拿到，就立刻返回，绝对不碰本地缩略图
+        } catch (e) {
+          // 2. 网络图彻底失败报错（超时、代理挂、链接失效等），才去读本地图
+          if (task.status === AriaStatus.Complete && task.dir && task.fileName) {
+            try {
+              const res = await getMediaThumbnail(task.media, task.post);
+              if (!cancelled && res.src) setLocalSrc(res.src);
+            } catch (err) {}
+          }
+        }
+      };
+
+      load();
+      return () => { cancelled = true; };
+    }, [task.gid, task.status]); // 只依赖 gid 和 status
+
+    const finalSrc = remoteSrc || localSrc; // 这里优先显示网络图，如果网络图没拿到，就用本地图
 
     return (
       <div className="shrink-0 relative bg-gray-100" style={{ width: itemClientHeight, height: itemClientHeight }}>
@@ -123,7 +135,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       })),
     );
 
-    // ✅ 辅助函数：在前端直接拼接路径，节约一次 IPC (path.join) 调用的时间
     const getFullPath = () => {
       const sep = t.dir.includes('\\') ? '\\' : '/';
       return t.dir.endsWith(sep) ? `${t.dir}${t.fileName}` : `${t.dir}${sep}${t.fileName}`;
@@ -191,8 +202,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       name: '打开',
       onClick: async () => {
         try {
-          // ✅ 核心修复：不再使用 await fs.exists，直接触发系统打开，极速响应！
-          // 如果文件不存在，Tauri 抛出错误，会被下面的 catch 捕获
           await shell.open(getFullPath());
         } catch (err: any) {
           window.log.error('打开文件失败', err);
@@ -207,7 +216,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       name: '打开目录',
       onClick: async () => {
         try {
-          // ✅ 核心修复：直接打开文件夹，去掉 /select 探测
           await showInFolder(t.dir, false);
         } catch (err: any) {
           window.log.error('打开目录失败', err);
