@@ -4,10 +4,9 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-// 缩略图最大边长
 const THUMB_MAX_SIZE: u32 = 400;
-// JPEG 质量
-const JPEG_QUALITY: u8 = 80;
+// ✅ 质量从 80 降到 75，体积更小，读取更快
+const JPEG_QUALITY: u8 = 75;
 
 fn get_save_dir_base() -> Option<String> {
     let appdata = std::env::var("APPDATA").ok()?;
@@ -23,7 +22,6 @@ fn get_default_download_dir() -> Option<PathBuf> {
     Some(PathBuf::from(user_profile).join("Downloads"))
 }
 
-/// ✅ 修改：本地缩略图存到 <下载目录>/.x-spider-cache/local
 fn get_thumb_cache_dir() -> Result<PathBuf, String> {
     let base_dir: PathBuf = if let Some(save_dir) = get_save_dir_base() {
         PathBuf::from(save_dir)

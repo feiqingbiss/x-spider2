@@ -17,14 +17,12 @@ import { useDownloadStore } from '../../stores/download';
 import { buildPostUrl, buildUserUrl } from '../../twitter/url';
 import { showInFolder } from '../../utils/shell';
 import { AriaStatus } from '../../utils/aria2';
-import MediaType from '../../enums/MediaType';
-import { delay } from '../../utils';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 import { ProxyAvatar } from '../common/ProxyAvatar';
 import {
-  getLocalThumbnail,
   getRemoteThumbnail,
+  getMediaThumbnail,
   clearImageCache,
 } from '../../utils/image-cache';
 
@@ -51,9 +49,6 @@ const areEqual = (
   );
 };
 
-const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
-const THUMB_TIMEOUT_MS = 15000;
-
 const ThumbnailArea = memo(
   ({
     task,
@@ -62,124 +57,83 @@ const ThumbnailArea = memo(
     task: DownloadTask;
     itemClientHeight: number;
   }) => {
-    const [imageLoaded, setImageLoaded] = useState(false);
+    const [displaySrc, setDisplaySrc] = useState('');
     const [imageErrored, setImageErrored] = useState(false);
-    const [imgSrc, setImgSrc] = useState('');
-    const [thumbKind, setThumbKind] = useState<'local' | 'remote' | 'none'>('none');
-    const imgSrcRef = useRef('');
+    const displaySrcRef = useRef(displaySrc);
 
     useEffect(() => {
-      imgSrcRef.current = imgSrc;
-    }, [imgSrc]);
+      displaySrcRef.current = displaySrc;
+    }, [displaySrc]);
 
     useEffect(() => {
       let cancelled = false;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-      const netUrl = task.media.url ? `${task.media.url}?format=jpg&name=thumb` : '';
-      const isVideoLike =
-        task.media.type === MediaType.Video || task.media.type === MediaType.Gif;
+      const netUrl = task.media.url
+        ? `${task.media.url}?format=jpg&name=thumb`
+        : '';
       const canUseLocal =
         task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
 
-      const loadImage = async () => {
-        try {
-          if (canUseLocal) {
-            const localThumbPath = isVideoLike
-              ? await path.join(task.dir, `${task.fileName}.thumb.jpg`)
-              : await path.join(task.dir, task.fileName);
-
-            let exists = await fs.exists(localThumbPath);
-            if (!exists && isVideoLike) {
-              for (const wait of THUMB_RETRY_DELAYS_MS) {
-                if (cancelled) return;
-                await delay(wait);
-                exists = await fs.exists(localThumbPath);
-                if (exists) break;
-              }
-            }
-
-            if (exists && !cancelled) {
-              const localSrc = await getLocalThumbnail(localThumbPath);
-              if (!cancelled) {
-                setImageLoaded(false);
-                setImageErrored(false);
-                setImgSrc(localSrc);
-                setThumbKind('local');
-              }
-              return;
-            }
-          }
-
-          if (netUrl && !cancelled) {
+      const load = async () => {
+        // 1. 先拿网络图垫底
+        if (!displaySrcRef.current && netUrl) {
+          try {
             const remoteSrc = await getRemoteThumbnail(netUrl);
-            if (!cancelled) {
-              setImageLoaded(false);
-              setImageErrored(false);
-              setImgSrc(remoteSrc);
-              setThumbKind('remote');
+            if (!cancelled && !displaySrcRef.current) {
+              setDisplaySrc(remoteSrc);
             }
-          } else if (!netUrl && !cancelled && !imgSrcRef.current) {
-            setThumbKind('none');
-          }
-        } catch (e) {
-          console.warn('[Thumb] load failed', e);
-          if (!cancelled && !imgSrcRef.current) {
-            setThumbKind('none');
+          } catch (e) {}
+        }
+
+        // 2. 已完成，请求本地高清图，并**错峰替换**
+        if (canUseLocal && !cancelled) {
+          try {
+            const res = await getMediaThumbnail(task.media, task.post);
+            if (!cancelled && res.src !== displaySrcRef.current) {
+              // ✅ 随机延迟 500ms ~ 2500ms，让几百个任务的替换动作错开
+              const delay = 500 + Math.random() * 2000;
+              timeoutId = setTimeout(() => {
+                if (!cancelled) {
+                  setDisplaySrc(res.src);
+                }
+              }, delay);
+            }
+          } catch (e) {
+            console.warn('[Thumb] local generate failed', e);
           }
         }
       };
 
-      loadImage();
+      load();
 
       return () => {
         cancelled = true;
+        if (timeoutId) clearTimeout(timeoutId);
       };
-    }, [task.gid, task.status, task.dir, task.fileName, task.media.url, task.media.type]);
+    }, [task.gid, task.status, task.dir, task.fileName, task.media, task.post]);
 
-    const settledRef = useRef(false);
-    useEffect(() => {
-      if (!imgSrc) return;
-      settledRef.current = false;
-      const timer = window.setTimeout(() => {
-        if (!settledRef.current) {
-          setImageErrored(true);
-          setImageLoaded(true);
-          settledRef.current = true;
-        }
-      }, THUMB_TIMEOUT_MS);
-      return () => window.clearTimeout(timer);
-    }, [imgSrc]);
-
-    const tagText =
-      thumbKind === 'local' ? 'L' : thumbKind === 'remote' ? 'R' : '-';
-    const tagColor = imageErrored
-      ? 'rgba(220,38,38,0.85)'
-      : thumbKind === 'local'
-        ? 'rgba(22,163,74,0.85)'
-        : thumbKind === 'remote'
-          ? 'rgba(37,99,235,0.85)'
-          : 'rgba(107,114,128,0.85)';
+    const handleError = () => {
+      setImageErrored(true);
+    };
 
     return (
       <div
         className="shrink-0 overflow-hidden relative bg-gray-100"
         style={{ width: itemClientHeight, height: itemClientHeight }}
       >
-        {!imgSrc && (
+        {!displaySrc && (
           <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
-            <span>生成缩略图中...</span>
-          </div>
-        )}
-        {imgSrc && !imageLoaded && !imageErrored && (
-          <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs pointer-events-none absolute inset-0 z-10">
             <span>加载中...</span>
           </div>
         )}
-        {imgSrc && imageErrored && (
-          <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
+
+        {displaySrc && imageErrored && (
+          <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs absolute inset-0 z-10">
             预览不可用
           </div>
         )}
+
         <a
           href={
             task.post.user?.screenName && task.post.id
@@ -191,35 +145,26 @@ const ThumbnailArea = memo(
           className="block w-full h-full"
           title="打开推文页"
         >
-          {imgSrc && (
+          {displaySrc && (
             <img
-              key={task.gid}
-              src={imgSrc}
+              src={displaySrc}
               className={`w-full h-full object-cover transition-all duration-300 transform hover:scale-105 ${
-                imageLoaded && !imageErrored
-                  ? 'opacity-100 block'
-                  : 'opacity-0 hidden'
+                imageErrored ? 'opacity-0' : 'opacity-100'
               }`}
-              onLoad={() => {
-                settledRef.current = true;
-                setImageLoaded(true);
-              }}
-              onError={() => {
-                settledRef.current = true;
-                setImageErrored(true);
-                setImageLoaded(true);
-              }}
+              onError={handleError}
               alt="缩略图"
             />
           )}
         </a>
-        <div
-          className="absolute right-1 bottom-1 px-1 rounded text-[10px] leading-4 text-white font-bold z-20"
-          style={{ background: tagColor }}
-        >
-          {tagText}
-        </div>
       </div>
+    );
+  },
+  (prevProps, nextProps) => {
+    return (
+      prevProps.task.gid === nextProps.task.gid &&
+      prevProps.task.status === nextProps.task.status &&
+      prevProps.task.fileName === nextProps.task.fileName &&
+      prevProps.itemClientHeight === nextProps.itemClientHeight
     );
   },
 );
@@ -243,8 +188,9 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
     );
 
     const handleRemove = async (gid: string) => {
-      // 可以清理内存中的缓存，但不要影响本地文件
-      clearImageCache(`https://pbs.twimg.com/media/${t.media.id}?format=jpg&name=thumb`);
+      clearImageCache(
+        `https://pbs.twimg.com/media/${t.media.id}?format=jpg&name=thumb`,
+      );
       await removeDownloadTask(gid);
     };
 
