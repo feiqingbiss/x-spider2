@@ -48,7 +48,6 @@ fn get_default_download_dir() -> Option<PathBuf> {
     Some(PathBuf::from(user_profile).join("Downloads"))
 }
 
-/// ✅ 修改：服务器端缩略图存到 <下载目录>/.x-spider-cache/remote
 fn get_cache_dir() -> Result<PathBuf, String> {
     let base_dir: PathBuf = if let Some(save_dir) = get_save_dir_base() {
         PathBuf::from(save_dir)
@@ -68,7 +67,6 @@ fn get_cache_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// 旧版系统缓存目录（仅用于后台清理遗留垃圾）
 fn get_legacy_system_cache_dir() -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA").ok()?;
     let dir = PathBuf::from(local).join("x-spider").join("image-cache");
@@ -94,8 +92,9 @@ fn get_proxy_url() -> Option<String> {
 }
 
 async fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
+    // ✅ 修改：将超时时间从 30 秒缩短为 10 秒，防止弱网导致大量请求堆积卡死
     let mut builder =
-        reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+        reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
 
     if let Some(proxy_url) = get_proxy_url() {
         let proxy = reqwest::Proxy::all(&proxy_url).map_err(|e| e.to_string())?;
@@ -121,7 +120,6 @@ async fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
         .map(|b| b.to_vec())
 }
 
-/// 走软件内配置的代理下载图片并缓存到 <下载目录>/.x-spider-cache/remote
 #[tauri::command]
 pub async fn download_image_to_cache(url: String) -> Result<String, String> {
     let cache_dir = get_cache_dir()?;
@@ -141,7 +139,6 @@ pub async fn download_image_to_cache(url: String) -> Result<String, String> {
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// 只清理旧版遗留在系统目录下的缓存，不动 .x-spider-cache
 pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
     let system_cache_dir = match get_legacy_system_cache_dir() {
         Some(dir) => dir,

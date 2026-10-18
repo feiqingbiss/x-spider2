@@ -11,7 +11,6 @@ const memoryCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 const localExistsCache = new Map<string, { exists: boolean; localPath: string }>();
 
-// ✅ 新增：对外暴露同步获取缓存的方法，防止组件刷新时闪烁
 export function getCachedRemoteThumbnail(url: string): string | undefined {
   return memoryCache.get(url);
 }
@@ -37,13 +36,16 @@ function createQueue(limit: number) {
     });
   };
 }
-const runQueue = createQueue(8);
+
+// ✅ 核心修复：分离网络和本地队列，避免本地生成图片卡死网络图片的加载
+const remoteQueue = createQueue(30); // 网络图片允许较高并发
+const localQueue = createQueue(4);   // 本地缩略图生成是 CPU/IO 密集型，限制低并发
 
 export function getRemoteThumbnail(url: string): Promise<string> {
   if (memoryCache.has(url)) return Promise.resolve(memoryCache.get(url)!);
   if (inflight.has(url)) return inflight.get(url)!;
 
-  const p = runQueue(() =>
+  const p = remoteQueue(() =>
     invoke<string>('download_image_to_cache', { url })
       .then((localPath) => {
         const src = convertFileSrc(localPath);
@@ -61,7 +63,7 @@ export function getLocalThumbnail(localPath: string): Promise<string> {
   if (memoryCache.has(cacheKey)) return Promise.resolve(memoryCache.get(cacheKey)!);
   if (inflight.has(cacheKey)) return inflight.get(cacheKey)!;
 
-  const p = runQueue(() =>
+  const p = localQueue(() =>
     invoke<string>('generate_thumbnail', { path: localPath })
       .then((thumbPath) => {
         const src = convertFileSrc(thumbPath);
@@ -127,7 +129,6 @@ export async function getMediaThumbnail(
     const qIndex = baseUrl.indexOf('?');
     if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
 
-    // 统一走代理
     const remoteUrl = `${baseUrl}?format=jpg&name=small`;
     finalSrc = await getRemoteThumbnail(remoteUrl);
   }

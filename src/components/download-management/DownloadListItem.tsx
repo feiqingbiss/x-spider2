@@ -50,7 +50,6 @@ const ThumbnailArea = memo(
   ({ task, itemClientHeight }: { task: DownloadTask; itemClientHeight: number }) => {
     const mediaId = task.media.id || 'unknown';
     
-    // ✅ 核心修复：初始化状态时，直接从内存缓存中同步获取，杜绝第一帧的灰底闪烁
     const [remoteSrc, setRemoteSrc] = useState<string>(() => {
       let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
       if (!baseUrl) return '';
@@ -62,39 +61,28 @@ const ThumbnailArea = memo(
       return getCachedMediaThumbnail(mediaId) || '';
     });
 
-    // 1. 请求网络兜底图（如果缓存里已经有了就直接跳过）
+    // 1. 请求网络兜底图
     useEffect(() => {
-      if (remoteSrc) return;
-      let cancelled = false;
       let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
       if (!baseUrl) return;
       const cleanUrl = baseUrl.split('?')[0];
       const remoteUrl = `${cleanUrl}?format=jpg&name=small`;
 
       getRemoteThumbnail(remoteUrl)
-        .then((src) => {
-          if (!cancelled) setRemoteSrc(src);
-        })
+        .then((src) => { setRemoteSrc(src); })
         .catch(() => {});
+    }, [task.gid]); // ✅ 仅依赖 gid，只请求一次
 
-      return () => { cancelled = true; };
-    }, [task.gid, remoteSrc]); // ✅ 只依赖 gid 和 当前状态
-
-    // 2. 任务完成后，尝试请求本地生成的缩略图
+    // 2. 任务完成后，请求本地生成的缩略图
     useEffect(() => {
       if (task.status !== AriaStatus.Complete || !task.dir || !task.fileName) return;
-      // 如果已经有了 localSrc，直接退出
-      if (localSrc) return;
       
-      let cancelled = false;
       getMediaThumbnail(task.media, task.post)
         .then((res) => {
-          if (!cancelled && res.src) setLocalSrc(res.src);
+          if (res.src) setLocalSrc(res.src);
         })
         .catch(() => {});
-
-      return () => { cancelled = true; };
-    }, [task.gid, task.status, localSrc]); // ✅ 剔除复杂对象依赖，避免由于状态合并造成的无限刷新
+    }, [task.gid, task.status]); // ✅ 仅依赖 gid 和 status
 
     const finalSrc = localSrc || remoteSrc;
 
