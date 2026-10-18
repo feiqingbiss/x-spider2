@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import { LoadingOutlined, PictureOutlined, FileImageOutlined } from '@ant-design/icons';
+import { LoadingOutlined, PictureOutlined } from '@ant-design/icons';
 import { App } from 'antd';
 import { shell } from '@tauri-apps/api';
 import dayjs from 'dayjs';
@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import MediaType from '../../enums/MediaType';
 import { TwitterMedia } from '../../interfaces/TwitterMedia';
 import { TwitterPost } from '../../interfaces/TwitterPost';
+import { useDownloadStore } from '../../stores/download';
 import { useHomepageStore } from '../../stores/homepage';
 import { buildPostUrl } from '../../twitter/url';
 import { InfiniteScroll } from '../InfiniteScroll';
@@ -81,7 +82,9 @@ const MediaGridItem: React.FC<{
   post: TwitterPost;
   userScreenName?: string;
 }> = ({ media, post, userScreenName }) => {
+  const { message } = App.useApp();
   const [localPath, setLocalPath] = useState<string | undefined>();
+  const createDownloadTask = useDownloadStore((s) => s.createDownloadTask);
 
   const actionOpen: GridViewItemAction | undefined = userScreenName
     ? {
@@ -99,6 +102,20 @@ const MediaGridItem: React.FC<{
         },
       }
     : undefined;
+
+  // ✅ 恢复下载功能
+  const actionDownload: GridViewItemAction = {
+    name: '下载',
+    onClick: async () => {
+      try {
+        await createDownloadTask({ post, media });
+        message.success('已添加到下载队列');
+      } catch (err: any) {
+        window.log.error(err);
+        message.error(`创建下载任务失败：${err?.message}`);
+      }
+    },
+  };
 
   return (
     <li
@@ -127,7 +144,7 @@ const MediaGridItem: React.FC<{
         )}
         <div className="absolute top-0 left-0 w-full h-full bg-[rgba(0,0,0,0.7)] transition-opacity opacity-0 group-hover:opacity-100 has-[:focus]:opacity-100">
           <GridViewItemActions
-            actions={[actionOpen, actionOpenLocal].filter(
+            actions={[actionOpen, actionOpenLocal, actionDownload].filter(
               (x): x is GridViewItemAction => x !== undefined,
             )}
           />
