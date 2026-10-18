@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
-import { fs, path } from '@tauri-apps/api';
+import { path } from '@tauri-apps/api';
 import { TwitterMedia } from '../interfaces/TwitterMedia';
 import { TwitterPost } from '../interfaces/TwitterPost';
 import { useSettingsStore } from '../stores/settings';
@@ -11,7 +11,7 @@ const memoryCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 const localExistsCache = new Map<string, { exists: boolean; localPath: string }>();
 
-// 独立队列：网络图并发 4，本地生成并发 1（保护机械硬盘磁头）
+// 独立队列：网络并发 4，本地生成并发 10（14700KF 完全吃得下）
 function createQueue(limit: number) {
   let active = 0;
   const q: (() => void)[] = [];
@@ -34,7 +34,7 @@ function createQueue(limit: number) {
 }
 
 const runRemoteQueue = createQueue(4);
-const runLocalQueue = createQueue(1); // ⚠️ 降为 1 防止机械盘卡死
+const runLocalQueue = createQueue(10);
 
 export function getRemoteThumbnail(url: string): Promise<string> {
   if (memoryCache.has(url)) return Promise.resolve(memoryCache.get(url)!);
@@ -92,6 +92,7 @@ export async function getMediaThumbnail(
   let localPath = '';
   let exists = false;
 
+  // 计算路径（不查 fs.exists，直接让 Rust 去读）
   if (settings.download.saveDirBase && settings.download.fileNameTemplate) {
     try {
       const templateData: FileNameTemplateData = { media, post };
@@ -101,49 +102,44 @@ export async function getMediaThumbnail(
       const dir = await path.join(settings.download.saveDirBase, resolvedDirName);
       const fileName = resolveVariables(settings.download.fileNameTemplate, templateData);
       localPath = await path.join(dir, fileName);
-
-      // 机械硬盘的 fs.exists 尽量走内存缓存，避免重复寻道
-      if (localExistsCache.has(mediaId)) {
-        exists = localExistsCache.get(mediaId)!.exists;
-      } else {
-        exists = await fs.exists(localPath);
-        localExistsCache.set(mediaId, { exists, localPath });
-      }
     } catch (e) {
       console.warn('路径解析失败', e);
     }
   }
 
   let finalSrc = '';
-  try {
-    if (exists && localPath) {
-      if (media.type === MediaType.Video || media.type === MediaType.Gif) {
-        const localThumbPath = `${localPath}.thumb.jpg`;
-        if (await fs.exists(localThumbPath)) {
-          finalSrc = await getLocalThumbnail(localThumbPath);
-        } else {
-          let baseUrl = media.url || `https://pbs.twimg.com/media/${media.id}`;
-          const qIndex = baseUrl.indexOf('?');
-          if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
-          finalSrc = `${baseUrl}?format=jpg&name=small`;
-        }
-      } else {
-        finalSrc = await getLocalThumbnail(localPath);
-      }
-    } else {
-      let baseUrl = media.url || `https://pbs.twimg.com/media/${media.id}`;
-      const qIndex = baseUrl.indexOf('?');
-      if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
-
-      if (media.type === MediaType.Video || media.type === MediaType.Gif) {
-        finalSrc = `${baseUrl}?format=jpg&name=small`;
-      } else {
-        finalSrc = await getRemoteThumbnail(`${baseUrl}?format=jpg&name=small`);
-      }
+  
+  // 尝试本地生成
+  if (localPath) {
+    let targetPath = localPath;
+    if (media.type === MediaType.Video || media.type === MediaType.Gif) {
+      targetPath = `${localPath}.thumb.jpg`;
     }
-  } catch (e) {
-    console.warn('[Thumbnail] 获取失败', media.type, media.url, e);
-    throw e;
+
+    try {
+      // 直接让 Rust 去读文件，读不到会 reject，直接走 catch
+      finalSrc = await getLocalThumbnail(targetPath);
+      exists = true;
+      localExistsCache.set(mediaId, { exists: true, localPath });
+    } catch (e) {
+      // 本地没原图或没缩略图，忽略
+      exists = false;
+      localExistsCache.set(mediaId, { exists: false, localPath: '' });
+    }
+  }
+
+  // 如果本地没有，走网络
+  if (!finalSrc) {
+    let baseUrl = media.url || `https://pbs.twimg.com/media/${media.id}`;
+    const qIndex = baseUrl.indexOf('?');
+    if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
+
+    if (media.type === MediaType.Video || media.type === MediaType.Gif) {
+      // 视频直连
+      finalSrc = `${baseUrl}?format=jpg&name=small`;
+    } else {
+      finalSrc = await getRemoteThumbnail(`${baseUrl}?format=jpg&name=small`);
+    }
   }
 
   memoryCache.set(cacheKey, finalSrc);

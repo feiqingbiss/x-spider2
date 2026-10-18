@@ -76,23 +76,24 @@ const ThumbnailArea = memo(
         task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
 
       const load = async () => {
-        // 1. 先拿网络图垫底
-        if (!displaySrcRef.current && netUrl) {
-          try {
-            const remoteSrc = await getRemoteThumbnail(netUrl);
-            if (!cancelled && !displaySrcRef.current) {
-              setDisplaySrc(remoteSrc);
-            }
-          } catch (e) {}
+        // 1. 立即并行发起网络图请求（垫底）
+        if (netUrl) {
+          getRemoteThumbnail(netUrl)
+            .then((remoteSrc) => {
+              if (!cancelled && !displaySrcRef.current) {
+                setDisplaySrc(remoteSrc);
+              }
+            })
+            .catch(() => {});
         }
 
-        // 2. 已完成，请求本地高清图，并**错峰替换**
+        // 2. 如果已完成，并行请求本地高清图
         if (canUseLocal && !cancelled) {
           try {
             const res = await getMediaThumbnail(task.media, task.post);
             if (!cancelled && res.src !== displaySrcRef.current) {
-              // ✅ 随机延迟 500ms ~ 2500ms，让几百个任务的替换动作错开
-              const delay = 500 + Math.random() * 2000;
+              // 随机延迟 500ms ~ 2000ms，让几百个任务的替换动作错开
+              const delay = 500 + Math.random() * 1500;
               timeoutId = setTimeout(() => {
                 if (!cancelled) {
                   setDisplaySrc(res.src);
