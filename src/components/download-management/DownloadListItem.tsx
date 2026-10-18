@@ -32,7 +32,6 @@ export interface DownloadListItemProps {
 const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemProps) => {
   const prev = prevProps.task;
   const next = nextProps.task;
-  // ✅ 核心拦截：只要 gid、状态、文件名不变，这个组件根本不会重渲染
   return prev.gid === next.gid && prev.status === next.status && prev.fileName === next.fileName;
 };
 
@@ -49,7 +48,7 @@ const ThumbnailArea = memo(
         if (canUseLocal) {
           try {
             const res = await getMediaThumbnail(task.media, task.post);
-            if (!cancelled) setImgSrc(res);
+            if (!cancelled) setImgSrc(res.src); // ✅ 修复：取 res.src
             return;
           } catch (e) {}
         }
@@ -80,7 +79,6 @@ const ThumbnailArea = memo(
   (prev, next) => prev.task.gid === next.task.gid && prev.task.status === next.task.status && prev.itemClientHeight === next.itemClientHeight
 );
 
-// ✅ 将高频更新的进度和状态独立出去，避免影响外部 DOM
 const TaskStatusBar = memo(({ task }: { task: DownloadTask }) => {
   const percent = task.totalSize > 0 ? Math.round((task.completeSize / task.totalSize) * 100) : 0;
   return (
@@ -180,7 +178,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
             </div>
           </div>
           
-          {/* ✅ 进度条由独立组件渲染，高频更新被彻底隔离 */}
           <TaskStatusBar task={t} />
         </div>
       </div>
