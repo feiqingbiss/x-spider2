@@ -11,6 +11,14 @@ const memoryCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 const localExistsCache = new Map<string, { exists: boolean; localPath: string }>();
 
+// ✅ 新增：对外暴露同步获取缓存的方法，防止组件刷新时闪烁
+export function getCachedRemoteThumbnail(url: string): string | undefined {
+  return memoryCache.get(url);
+}
+export function getCachedMediaThumbnail(mediaId: string): string | undefined {
+  return memoryCache.get(`media:${mediaId}`);
+}
+
 function createQueue(limit: number) {
   let active = 0;
   const q: (() => void)[] = [];
@@ -66,7 +74,6 @@ export function getLocalThumbnail(localPath: string): Promise<string> {
   return p;
 }
 
-// ✅ 修复：返回 { src, localPath } 对象
 export async function getMediaThumbnail(
   media: TwitterMedia,
   post: TwitterPost,
@@ -120,11 +127,9 @@ export async function getMediaThumbnail(
     const qIndex = baseUrl.indexOf('?');
     if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
 
-    if (media.type === MediaType.Video || media.type === MediaType.Gif) {
-      finalSrc = `${baseUrl}?format=jpg&name=small`;
-    } else {
-      finalSrc = await getRemoteThumbnail(`${baseUrl}?format=jpg&name=small`);
-    }
+    // 统一走代理
+    const remoteUrl = `${baseUrl}?format=jpg&name=small`;
+    finalSrc = await getRemoteThumbnail(remoteUrl);
   }
 
   memoryCache.set(cacheKey, finalSrc);

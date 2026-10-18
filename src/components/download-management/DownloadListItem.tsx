@@ -21,7 +21,12 @@ import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 import { ProxyAvatar } from '../common/ProxyAvatar';
 import { SmoothImage } from '../common/SmoothImage';
-import { getRemoteThumbnail, getMediaThumbnail } from '../../utils/image-cache';
+import { 
+  getRemoteThumbnail, 
+  getMediaThumbnail, 
+  getCachedMediaThumbnail, 
+  getCachedRemoteThumbnail 
+} from '../../utils/image-cache';
 
 export interface DownloadListItemProps {
   task: DownloadTask;
@@ -32,7 +37,6 @@ export interface DownloadListItemProps {
 const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemProps) => {
   const prev = prevProps.task;
   const next = nextProps.task;
-  // ✅ 修复：加入进度对比，让进度条动起来
   return (
     prev.gid === next.gid && 
     prev.status === next.status && 
@@ -44,20 +48,28 @@ const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemP
 
 const ThumbnailArea = memo(
   ({ task, itemClientHeight }: { task: DownloadTask; itemClientHeight: number }) => {
-    // ✅ 核心修复：分离网络状态和本地状态，避免置空引发的闪烁
-    const [remoteSrc, setRemoteSrc] = useState<string>('');
-    const [localSrc, setLocalSrc] = useState<string>('');
+    const mediaId = task.media.id || 'unknown';
+    
+    // ✅ 核心修复：初始化状态时，直接从内存缓存中同步获取，杜绝第一帧的灰底闪烁
+    const [remoteSrc, setRemoteSrc] = useState<string>(() => {
+      let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
+      if (!baseUrl) return '';
+      const cleanUrl = baseUrl.split('?')[0];
+      return getCachedRemoteThumbnail(`${cleanUrl}?format=jpg&name=small`) || '';
+    });
 
-    // 1. 请求网络兜底图
+    const [localSrc, setLocalSrc] = useState<string>(() => {
+      return getCachedMediaThumbnail(mediaId) || '';
+    });
+
+    // 1. 请求网络兜底图（如果缓存里已经有了就直接跳过）
     useEffect(() => {
+      if (remoteSrc) return;
       let cancelled = false;
       let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
       if (!baseUrl) return;
-
-      const qIndex = baseUrl.indexOf('?');
-      if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
-      
-      const remoteUrl = `${baseUrl}?format=jpg&name=small`;
+      const cleanUrl = baseUrl.split('?')[0];
+      const remoteUrl = `${cleanUrl}?format=jpg&name=small`;
 
       getRemoteThumbnail(remoteUrl)
         .then((src) => {
@@ -66,13 +78,15 @@ const ThumbnailArea = memo(
         .catch(() => {});
 
       return () => { cancelled = true; };
-    }, [task.gid, task.media.url, task.media.id]);
+    }, [task.gid, remoteSrc]); // ✅ 只依赖 gid 和 当前状态
 
     // 2. 任务完成后，尝试请求本地生成的缩略图
     useEffect(() => {
       if (task.status !== AriaStatus.Complete || !task.dir || !task.fileName) return;
+      // 如果已经有了 localSrc，直接退出
+      if (localSrc) return;
+      
       let cancelled = false;
-
       getMediaThumbnail(task.media, task.post)
         .then((res) => {
           if (!cancelled && res.src) setLocalSrc(res.src);
@@ -80,9 +94,8 @@ const ThumbnailArea = memo(
         .catch(() => {});
 
       return () => { cancelled = true; };
-    }, [task.gid, task.status, task.dir, task.fileName, task.media, task.post]);
+    }, [task.gid, task.status, localSrc]); // ✅ 剔除复杂对象依赖，避免由于状态合并造成的无限刷新
 
-    // 本地图优先，没有本地图就用网络图。绝不为空。
     const finalSrc = localSrc || remoteSrc;
 
     return (
