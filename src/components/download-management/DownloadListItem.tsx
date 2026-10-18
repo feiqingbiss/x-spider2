@@ -32,46 +32,68 @@ export interface DownloadListItemProps {
 const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemProps) => {
   const prev = prevProps.task;
   const next = nextProps.task;
-  return prev.gid === next.gid && prev.status === next.status && prev.fileName === next.fileName;
+  // ✅ 修复：加入进度对比，让进度条动起来
+  return (
+    prev.gid === next.gid && 
+    prev.status === next.status && 
+    prev.fileName === next.fileName &&
+    prev.completeSize === next.completeSize &&
+    prev.totalSize === next.totalSize
+  );
 };
 
 const ThumbnailArea = memo(
   ({ task, itemClientHeight }: { task: DownloadTask; itemClientHeight: number }) => {
-    const [imgSrc, setImgSrc] = useState('');
+    // ✅ 核心修复：分离网络状态和本地状态，避免置空引发的闪烁
+    const [remoteSrc, setRemoteSrc] = useState<string>('');
+    const [localSrc, setLocalSrc] = useState<string>('');
 
+    // 1. 请求网络兜底图
     useEffect(() => {
       let cancelled = false;
-      const netUrl = task.media.url ? `${task.media.url}?format=jpg&name=thumb` : '';
-      const canUseLocal = task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
+      let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
+      if (!baseUrl) return;
 
-      const load = async () => {
-        if (canUseLocal) {
-          try {
-            const res = await getMediaThumbnail(task.media, task.post);
-            if (!cancelled) setImgSrc(res.src); // ✅ 修复：取 res.src
-            return;
-          } catch (e) {}
-        }
-        if (netUrl) {
-          try {
-            const remoteSrc = await getRemoteThumbnail(netUrl);
-            if (!cancelled) setImgSrc(remoteSrc);
-          } catch (e) {}
-        }
-      };
-      load();
+      const qIndex = baseUrl.indexOf('?');
+      if (qIndex !== -1) baseUrl = baseUrl.slice(0, qIndex);
+      
+      const remoteUrl = `${baseUrl}?format=jpg&name=small`;
+
+      getRemoteThumbnail(remoteUrl)
+        .then((src) => {
+          if (!cancelled) setRemoteSrc(src);
+        })
+        .catch(() => {});
+
+      return () => { cancelled = true; };
+    }, [task.gid, task.media.url, task.media.id]);
+
+    // 2. 任务完成后，尝试请求本地生成的缩略图
+    useEffect(() => {
+      if (task.status !== AriaStatus.Complete || !task.dir || !task.fileName) return;
+      let cancelled = false;
+
+      getMediaThumbnail(task.media, task.post)
+        .then((res) => {
+          if (!cancelled && res.src) setLocalSrc(res.src);
+        })
+        .catch(() => {});
+
       return () => { cancelled = true; };
     }, [task.gid, task.status, task.dir, task.fileName, task.media, task.post]);
 
+    // 本地图优先，没有本地图就用网络图。绝不为空。
+    const finalSrc = localSrc || remoteSrc;
+
     return (
       <div className="shrink-0 relative bg-gray-100" style={{ width: itemClientHeight, height: itemClientHeight }}>
-        {!imgSrc && (
+        {!finalSrc && (
           <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
             <span>加载中...</span>
           </div>
         )}
         <a href={task.post.user?.screenName && task.post.id ? buildPostUrl(task.post.user.screenName, task.post.id) : 'javascript:void(0);'} target="_blank" rel="noreferrer" className="block w-full h-full" title="打开推文页">
-          {imgSrc && <SmoothImage src={imgSrc} className="w-full h-full transition-transform duration-300 transform hover:scale-105" />}
+          {finalSrc && <SmoothImage src={finalSrc} className="w-full h-full transition-transform duration-300 transform hover:scale-105" />}
         </a>
       </div>
     );

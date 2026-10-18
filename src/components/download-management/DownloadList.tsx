@@ -27,7 +27,16 @@ function tasksEqual(a: DownloadTask[], b: DownloadTask[]): boolean {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    if (x.gid !== y.gid || x.status !== y.status) return false;
+    // ✅ 修复：必须对比 completeSize 和 totalSize，否则进度更新会被拦截！
+    if (
+      x.gid !== y.gid || 
+      x.status !== y.status || 
+      x.completeSize !== y.completeSize || 
+      x.totalSize !== y.totalSize ||
+      x.fileName !== y.fileName
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -66,7 +75,7 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   useMount(() => updateListHeight());
   useEventListener('resize', updateListHeight);
 
-  // ✅ 优化：过滤和排序仅依赖于 gid 和 status，不依赖具体进度
+  // ✅ 优化：过滤和排序仅依赖于 gid 和 status 等关键字段
   const tasks = useMemo(() => {
     const filtered = R.filter(filter, downloadTasks);
     const sorted = sort ? R.sort(sort, filtered) : filtered;
