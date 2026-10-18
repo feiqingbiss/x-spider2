@@ -143,11 +143,6 @@ export async function mergeAriaStatusToDownloadTask(
   oldTask: DownloadTask,
   now = Date.now(),
 ): Promise<DownloadTask> {
-  // ✅ 修复：不再从 aria2 覆盖 `dir` 和 `fileName`。
-  //    原因：aria2 返回的路径可能与前端生成的字符串有细微差异
-  //    （斜杠方向、URL 编码等），导致 `DownloadListItem` 的 useEffect
-  //    依赖被误判为变化，图片被反复重置、UI 频闪。
-  //    我们自己的 `dir` / `fileName` 才是权威值，保持不变。
   return {
     ...oldTask,
     gid: ariaStatus.gid,
@@ -159,7 +154,6 @@ export async function mergeAriaStatusToDownloadTask(
   };
 }
 
-// ✅ 新增：封面图任务参数（视频 / GIF 才有）
 export interface ThumbTaskInfo {
   url: string;
   dir: string;
@@ -207,12 +201,23 @@ export async function prepareDownloadTask({
   let thumbTask: ThumbTaskInfo | undefined;
   const isVideoLike =
     media.type === MediaType.Video || media.type === MediaType.Gif;
-  if (isVideoLike && media.url) {
-    thumbTask = {
-      url: `${media.url}?format=jpg&name=thumb`,
-      dir,
-      fileName: `${fileName}.thumb.jpg`,
-    };
+  
+  if (isVideoLike) {
+    // ✅ 修复：如果 media.url 为空，兜底使用 media.id 拼接封面地址
+    let thumbUrl = '';
+    if (media.url) {
+      thumbUrl = `${media.url}?format=jpg&name=thumb`;
+    } else if (media.id) {
+      thumbUrl = `https://pbs.twimg.com/media/${media.id}?format=jpg&name=thumb`;
+    }
+    
+    if (thumbUrl) {
+      thumbTask = {
+        url: thumbUrl,
+        dir,
+        fileName: `${fileName}.thumb.jpg`,
+      };
+    }
   }
 
   return { task, thumbTask };

@@ -14,6 +14,7 @@ import { delay } from '../../utils';
 import { resolveVariables } from '../../utils/file-name-template';
 import { FileNameTemplateData } from '../../interfaces/FileNameTemplateData';
 import { CreateDownloadTaskParams } from './types';
+import MediaType from '../../enums/MediaType';
 
 // ===================== 基础配置 =====================
 const MAX_ACTIVE_TASKS = 1;
@@ -261,8 +262,17 @@ async function analyzePosts(
   for (const info of mediaInfos) {
     totalMediaCount++;
     const files = dirToFiles.get(info.dir);
+    const isVideoLike = info.media.type === MediaType.Video || info.media.type === MediaType.Gif;
+    const thumbExists = files?.has(`${info.fileName}.thumb.jpg`);
+
     if (files && fileExistsWithSuffix(files, info.fileName)) {
-      existCount++;
+      // ✅ 主文件已存在
+      if (isVideoLike && !thumbExists) {
+        // 如果视频没有缩略图，加入任务队列去补
+        missingTasks.push({ media: info.media, post: info.post });
+      } else {
+        existCount++;
+      }
     } else {
       missingTasks.push({ media: info.media, post: info.post });
     }
@@ -427,12 +437,21 @@ async function indexBySource(
 
     for (const info of mediaInfos) {
       const files = dirToFiles.get(info.dir);
+      const isVideoLike = info.media.type === MediaType.Video || info.media.type === MediaType.Gif;
+      const thumbExists = files?.has(`${info.fileName}.thumb.jpg`);
+
       if (
         settings.download.sameFileSkip &&
         files &&
         fileExistsWithSuffix(files, info.fileName)
       ) {
-        skipCount++;
+        // ✅ 主文件已存在
+        if (isVideoLike && !thumbExists) {
+          // 如果视频没有缩略图，加入任务队列去补
+          tasks.push({ media: info.media, post: info.post });
+        } else {
+          skipCount++;
+        }
         continue;
       }
       tasks.push({ media: info.media, post: info.post });
@@ -553,7 +572,6 @@ export async function runCreationTask(
 
   if (preCheckResult.totalMediaCount === 0) {
     logFn('info', `用户 ${user.screenName} 无媒体，跳过`);
-    // ✅ 无媒体也视为该用户"处理完成"
     useDownloadStore.getState().addCompletedUser(user.screenName);
     return;
   }
@@ -635,7 +653,6 @@ export async function runCreationTask(
       `batchCreate-${taskId}-end`,
     );
   } else {
-    // ✅ 无需新增任务（全部已下载）→ 标记该用户"处理完成"
     useDownloadStore.getState().addCompletedUser(user.screenName);
   }
 
