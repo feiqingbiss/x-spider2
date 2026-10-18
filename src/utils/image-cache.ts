@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
-import { fs, path } from '@tauri-apps/api';
+import { path } from '@tauri-apps/api'; // ✅ 修复：移除未使用的 fs
 import { TwitterMedia } from '../interfaces/TwitterMedia';
 import { TwitterPost } from '../interfaces/TwitterPost';
 import { useSettingsStore } from '../stores/settings';
@@ -38,7 +38,7 @@ function createQueue(limit: number) {
 }
 
 const remoteQueue = createQueue(30); 
-const localQueue = createQueue(4);   // ✅ 调整为 4 个并发，平衡性能和速度
+const localQueue = createQueue(4);   // ✅ 4 个并发，平衡性能和速度
 
 export function getRemoteThumbnail(url: string): Promise<string> {
   if (memoryCache.has(url)) return Promise.resolve(memoryCache.get(url)!);
