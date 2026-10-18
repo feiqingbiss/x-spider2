@@ -1,22 +1,26 @@
 import { useEffect } from 'react';
 import { useResolvedProxyUrl } from '../useResolvedProxyUrl';
-import { aria2 } from '../../utils/aria2';
+import { aria2, AriaStatus } from '../../utils/aria2';
 import { useDownloadStore } from '../../stores/download';
 
-/**
- * Aria 和 Store 双向绑定
- * 组件卸载时正确解绑所有事件，避免后台事件污染其他页面
- * 
- * 优化点：
- * 1. updateProxy 增加了 catch 保护，避免未处理的 Promise rejection
- * 2. 事件监听增加了 100ms 微批处理，用 Set 去重，极大降低 IPC 请求频率
- * 3. 增加 try-catch 保护，单个任务同步失败不影响其他任务
- */
+// 识别因为休眠/断网引起的错误
+function isNetworkError(msg: string = '') {
+  const m = msg.toLowerCase();
+  return (
+    m.includes('timeout') ||
+    m.includes('network') ||
+    m.includes('connection') ||
+    m.includes('reset') ||
+    m.includes('eof') ||
+    m.includes('10053') || // Windows 常见的网络强制断开错误码
+    m.includes('disconnected')
+  );
+}
+
 export function useAriaBinding() {
   const proxyUrl = useResolvedProxyUrl();
 
   useEffect(() => {
-    // 增加 catch 保护，防止未处理的 Promise 错误
     aria2.updateProxy(proxyUrl).catch((err) => {
       if (typeof window !== 'undefined' && window.log?.category) {
         window.log.category('ARIA').warn('更新代理失败', err);
@@ -24,12 +28,10 @@ export function useAriaBinding() {
     });
   }, [proxyUrl]);
 
-  const syncDownloadTaskStatus = useDownloadStore(
-    (state) => state.syncDownloadTaskStatus,
-  );
+  const syncDownloadTaskStatus = useDownloadStore((state) => state.syncDownloadTaskStatus);
 
+  // 监听 Aria2 常规事件
   useEffect(() => {
-    // 使用 Set 收集短时间内触发的 gid，避免同一 gid 频繁请求
     const pendingGids = new Set<string>();
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -37,48 +39,78 @@ export function useAriaBinding() {
       timer = null;
       const gids = Array.from(pendingGids);
       pendingGids.clear();
-
       if (gids.length === 0) return;
-
-      // 顺序处理收集到的 gid，降低 aria2 压力
       for (const gid of gids) {
-        try {
-          await syncDownloadTaskStatus(gid);
-        } catch (err) {
-          // 忽略单个任务同步失败（例如任务已被移除）
-          if (typeof window !== 'undefined' && window.log?.category) {
-            window.log.category('ARIA').debug(`同步任务 ${gid} 状态失败`, err);
-          }
-        }
+        try { await syncDownloadTaskStatus(gid); } catch (err) {}
       }
     };
 
     const onAria2StatusChanged = (gid: string) => {
       pendingGids.add(gid);
-      if (timer === null) {
-        // 延迟 100ms 汇聚一批事件，减少 IPC 查询次数
-        timer = setTimeout(flushPending, 100);
-      }
+      if (timer === null) timer = setTimeout(flushPending, 100);
     };
 
-    // 绑定事件
     const unlistenComplete = aria2.onDownloadComplete.listen(onAria2StatusChanged);
     const unlistenError = aria2.onDownloadError.listen(onAria2StatusChanged);
     const unlistenPause = aria2.onDownloadPause.listen(onAria2StatusChanged);
     const unlistenStart = aria2.onDownloadStart.listen(onAria2StatusChanged);
     const unlistenStop = aria2.onDownloadStop.listen(onAria2StatusChanged);
 
-    // 返回清理函数，组件卸载时解绑
     return () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      if (timer !== null) clearTimeout(timer);
       unlistenComplete();
       unlistenError();
       unlistenPause();
       unlistenStart();
       unlistenStop();
     };
-  }, [syncDownloadTaskStatus]); // 确保 syncDownloadTaskStatus 引用稳定
+  }, [syncDownloadTaskStatus]);
+
+  // ✅ 新增：监听系统唤醒/窗口重新获得焦点
+  useEffect(() => {
+    const handleWakeUp = async () => {
+      // 如果文档处于隐藏状态，忽略（主要是防止切换到其他标签页时触发）
+      if (document.visibilityState === 'hidden') return;
+
+      const state = useDownloadStore.getState();
+      
+      // 找出所有因为网络断开导致报错的任务
+      const networkErrorTasks = state.downloadTasks.filter(
+        (t) => t.status === AriaStatus.Error && isNetworkError(t.error)
+      );
+
+      if (networkErrorTasks.length === 0) return;
+
+      window.log?.info(`[Aria] 检测到系统唤醒，正在自动恢复 ${networkErrorTasks.length} 个断网任务...`);
+
+      // 批量发送 unpause 指令唤醒它们
+      for (const t of networkErrorTasks) {
+        try {
+          await aria2.invoke('aria2.unpause', t.gid);
+          // 稍微延迟一下，防止瞬间发送太多 RPC 导致拥堵
+          await new Promise(r => setTimeout(r, 100)); 
+        } catch (e) {
+          // 如果 unpause 失败（比如 Aria 重启了找不到 gid），可能说明任务彻底死了，这里暂不做深度重试
+        }
+      }
+      
+      // 触发一次全局同步，刷新 UI 状态
+      state.downloadTasks.forEach(t => {
+        syncDownloadTaskStatus(t.gid).catch(() => {});
+      });
+    };
+
+    // 监听窗口获得焦点和系统唤醒
+    window.addEventListener('focus', handleWakeUp);
+    document.addEventListener('visibilitychange', handleWakeUp);
+    
+    // 还可以监听 aria 自己的重连成功事件
+    const unlistenReady = aria2.onReady.listen(handleWakeUp);
+
+    return () => {
+      window.removeEventListener('focus', handleWakeUp);
+      document.removeEventListener('visibilitychange', handleWakeUp);
+      unlistenReady();
+    };
+  }, [syncDownloadTaskStatus]);
 }

@@ -33,6 +33,10 @@ class Aria2 {
   #invokeId = 0;
   #globalOptions: Record<string, string> = {};
   #callbackMap = new Map<number, (data: any) => void>();
+  
+  // ✅ 新增：重连控制
+  #isReconnecting = false;
+  #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   get #tokenParam() {
     return `token:${this.#secret}`;
@@ -41,6 +45,7 @@ class Aria2 {
   #onBeforeUnload = this.#_onBeforeUnload.bind(this);
   #onStderr = this.#_onStderr.bind(this);
   #onWsMessage = this.#_onWsMessage.bind(this);
+  #onWsClose = this.#_onWsClose.bind(this);
 
   onReady = new EventEmitter();
   onDownloadStart = new EventEmitter<string>();
@@ -56,7 +61,7 @@ class Aria2 {
     this.#log = log.category('ARIA');
     /**
      * 启动 Aria2c 子进程
-     * 核心修改：添加 --check-certificate=false 解决 SSL/TLS 吊销检查失败 (80092013)
+     * ✅ 新增 --retry-wait=10 和 --max-tries=5，休眠唤醒后网络断开时 aria2 会自动重试
      */
     const args = [
       '--enable-rpc',
@@ -64,7 +69,10 @@ class Aria2 {
       this.#secret,
       '--rpc-listen-port',
       this.#port.toString(),
-      '--check-certificate=false', // <-- 关键修复行：跳过所有证书校验（含吊销检查）
+      '--check-certificate=false', 
+      '--auto-save-interval=30',
+      '--retry-wait=10',
+      '--max-tries=5',
     ];
     this.#command = Command.sidecar('binaries/aria2c', args);
     this.#log.info('Spawn with args:', args);
@@ -91,11 +99,16 @@ class Aria2 {
       this.#command!.stderr.on('data', onStderr);
     });
 
-    /**
-     * 连接 Websocket
-     */
-    this.#log.info('Connecting websocket...');
+    await this.#connectWs();
+
+    window.addEventListener('beforeunload', this.#onBeforeUnload);
+    this.#command.stderr.on('data', this.#onStderr);
+  }
+
+  async #connectWs() {
+    this.#log?.info('Connecting websocket...');
     this.#ws = new WebSocket(`ws://127.0.0.1:${this.#port}/jsonrpc`);
+    
     await new Promise((resolve, reject) => {
       const onError = (ev: any) => {
         this.#log?.error('Failed to connect websocket', ev);
@@ -106,20 +119,43 @@ class Aria2 {
         () => {
           this.#log?.info('Websocket connected');
           this.#ready = true;
+          this.#isReconnecting = false;
           this.#ws!.removeEventListener('error', onError);
           resolve(null);
+          // 重连成功后，通知外部
+          if (this.#isReconnecting) this.onReady.emit();
         },
         { once: true },
       );
       this.#ws!.addEventListener('error', onError, { once: true });
+      this.#ws!.addEventListener('message', this.#onWsMessage);
+      this.#ws!.addEventListener('close', this.#onWsClose);
     });
+  }
 
-    /**
-     * 绑定一些事件
-     */
-    window.addEventListener('beforeunload', this.#onBeforeUnload);
-    this.#command.stderr.on('data', this.#onStderr);
-    this.#ws.addEventListener('message', this.#onWsMessage);
+  // ✅ 新增：WebSocket 断线自动重连逻辑
+  async #_onWsClose() {
+    this.#ready = false;
+    this.#log?.warn('Websocket closed. Pending callbacks will be flushed.');
+    
+    // 清理所有等待中的回调，避免前端 Promise 永远等待
+    this.#callbackMap.forEach((fn) => fn({ error: { message: 'Websocket disconnected' } }));
+    this.#callbackMap.clear();
+
+    if (this.#isReconnecting) return;
+    this.#isReconnecting = true;
+
+    this.#log?.info('Scheduling WebSocket reconnect in 3s...');
+    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = setTimeout(async () => {
+      try {
+        await this.#connectWs();
+      } catch (e) {
+        this.#log?.error('Reconnect failed, will retry via onclose', e);
+        this.#isReconnecting = false;
+        this.#_onWsClose(); // 失败则继续重试
+      }
+    }, 3000);
   }
 
   #_onBeforeUnload() {
@@ -134,7 +170,6 @@ class Aria2 {
 
   async #_onWsMessage(ev: MessageEvent) {
     let data: any;
-
     try {
       data = JSON.parse(ev.data);
     } catch (err) {
@@ -142,53 +177,31 @@ class Aria2 {
       return;
     }
 
-    this.#log?.info('Ws received:', data);
-
     if (data.id) {
       const id = Number(data.id);
       const fn = this.#callbackMap.get(id);
       if (fn) {
         fn(data);
         this.#callbackMap.delete(id);
-      } else {
-        this.#log?.warn(`Callback ${id} is not exists`);
       }
     } else if (data.method) {
-      // Event
       const gid: string = data.params[0].gid;
       await this.#onAriaEvent(data.method, gid);
-    } else {
-      this.#log?.warn('Unknown message:', ev.data);
     }
   }
 
   async #onAriaEvent(method: string, gid: string) {
-    this.#log?.info(`Received event method=${method} gid=${gid}`);
     switch (method) {
-      case 'aria2.onDownloadStart':
-        this.onDownloadStart.emit(gid);
-        break;
-      case 'aria2.onDownloadPause':
-        this.onDownloadPause.emit(gid);
-        break;
-      case 'aria2.onDownloadStop':
-        this.onDownloadStop.emit(gid);
-        break;
-      case 'aria2.onDownloadComplete':
-        this.onDownloadComplete.emit(gid);
-        break;
-      case 'aria2.onDownloadError':
-        this.onDownloadError.emit(gid);
-        break;
-      default:
-        this.#log?.warn('Unknown event:', method);
-        break;
+      case 'aria2.onDownloadStart': this.onDownloadStart.emit(gid); break;
+      case 'aria2.onDownloadPause': this.onDownloadPause.emit(gid); break;
+      case 'aria2.onDownloadStop': this.onDownloadStop.emit(gid); break;
+      case 'aria2.onDownloadComplete': this.onDownloadComplete.emit(gid); break;
+      case 'aria2.onDownloadError': this.onDownloadError.emit(gid); break;
     }
   }
 
   async #updateGlobalOptions(options: Record<string, string>) {
     this.#globalOptions = options;
-    this.#log?.info('Update global options:', this.#globalOptions);
     await this.invoke('aria2.changeGlobalOption', this.#globalOptions);
   }
 
@@ -197,44 +210,24 @@ class Aria2 {
   }
 
   async updateProxy(proxyUrl: string) {
-    this.#log?.info('Update proxy url:', proxyUrl);
     await this.#updateGlobalOptions({
       ...this.#globalOptions,
       'all-proxy': proxyUrl,
     });
   }
 
-  async #invoke(
-    method: string,
-    params: any[],
-  ): Promise<AriaResult | AriaResult[]> {
+  async #invoke(method: string, params: any[]): Promise<AriaResult | AriaResult[]> {
     this.ensureReady();
     return new Promise((resolve, reject) => {
       const id = this.#invokeId++;
-      const payload = {
-        jsonrpc: '2.0',
-        id: id.toString(),
-        method,
-        params,
-      };
-      this.#log?.info(`Call ${method} id=${id}`, payload);
+      const payload = { jsonrpc: '2.0', id: id.toString(), method, params };
       this.#ws!.send(JSON.stringify(payload));
 
       this.#callbackMap.set(id, (data: any) => {
         if (data.error) {
-          const err = new Error(
-            `Aria2 调用 ${method} 失败：${data.error.message}`,
-          );
-          this.#log?.error(
-            `Return ${method} id=${id} error=`,
-            data.error,
-            'params=',
-            params,
-          );
-          reject(err);
+          reject(new Error(`Aria2 调用 ${method} 失败：${data.error.message}`));
           return;
         }
-        this.#log?.info(`Return ${method} id=${id}`, data.result);
         resolve(data.result);
       });
     });
@@ -244,14 +237,9 @@ class Aria2 {
     return this.#invoke(method, [this.#tokenParam, ...args]);
   }
 
-  async batchInvoke(
-    payload: { methodName: string; params: any[] }[],
-  ): Promise<AriaResult[]> {
+  async batchInvoke(payload: { methodName: string; params: any[] }[]): Promise<AriaResult[]> {
     return (await this.#invoke('system.multicall', [
-      payload.map((item) => ({
-        methodName: item.methodName,
-        params: [this.#tokenParam, ...item.params],
-      })),
+      payload.map((item) => ({ methodName: item.methodName, params: [this.#tokenParam, ...item.params] })),
     ])) as AriaResult[];
   }
 
@@ -261,10 +249,7 @@ class Aria2 {
     if (!Array.isArray(gid)) return this.invoke('aria2.tellStatus', gid);
 
     const results = await this.batchInvoke(
-      gid.map((id) => ({
-        methodName: 'aria2.tellStatus',
-        params: [id],
-      })),
+      gid.map((id) => ({ methodName: 'aria2.tellStatus', params: [id] })),
     );
 
     const resultMap = R.pipe(
