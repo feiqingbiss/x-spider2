@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Progress } from 'antd';
 import { useShallow } from 'zustand/react/shallow';
 import { useDownloadStore } from '../../stores/download';
@@ -40,21 +40,32 @@ function phaseText(t: CreationTask): string {
   }
 }
 
+/**
+ * ✅ 基于真实拉取条数计算进度，2000条封顶99%
+ */
 function getPhasePercent(
   phase: CreationPhase | undefined,
-  tick: number,
+  indexedPosts: number = 0,
 ): number {
   switch (phase) {
     case 'waiting':
       return 0;
     case 'precheck':
-      return Math.min(10, Math.round(tick * 0.7));
-    case 'index':
-      return Math.min(50, Math.round(10 + tick * 1));
-    case 'tweets':
-      return Math.min(90, Math.round(50 + tick * 1));
+      return 5;
+    case 'index': {
+      // 媒体索引阶段：10% - 55%
+      const base = 10;
+      const percent = base + (indexedPosts / 2000) * 45;
+      return Math.min(55, Math.round(percent));
+    }
+    case 'tweets': {
+      // 帖子索引阶段：55% - 99%
+      const base = 55;
+      const percent = base + (indexedPosts / 2000) * 44;
+      return Math.min(99, Math.round(percent));
+    }
     case 'creating':
-      return Math.min(95, Math.round(90 + tick * 0.4));
+      return 99;
     case 'done':
       return 100;
     default:
@@ -91,7 +102,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         ).length;
       }
 
-      // 正在创建任务的用户集合（小写归一）
       const creatingSet = new Set<string>();
       for (const t of s.creationTasks) {
         if (t.user?.screenName) {
@@ -99,7 +109,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         }
       }
 
-      // 按用户聚合 downloadTasks
       const userMap = new Map<string, { total: number; done: number }>();
       for (const t of s.downloadTasks) {
         const u = t.post.user?.screenName?.toLowerCase();
@@ -115,7 +124,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
         }
       }
 
-      // ✅ 会话用户集合 + 已由后端标记完成的用户集合
       const sessionSet = new Set(
         s.sessionUserNames.map((n) => n.toLowerCase()),
       );
@@ -126,7 +134,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       let doneUsersCount = 0;
       for (const name of sessionSet) {
         if (creatingSet.has(name)) continue;
-        // ✅ 优先使用后端标记的"处理完成"（预检 100% 已下载 / 无媒体）
         if (completedSet.has(name)) {
           doneUsersCount++;
           continue;
@@ -162,25 +169,13 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     (tab) => tab.name === currentTab,
   )?.children;
 
-  // ============ 左环：预检/索引 ============
-  const [leftTick, setLeftTick] = useState(0);
-
-  useEffect(() => {
-    if (!activeCreation) {
-      setLeftTick(0);
-      return;
-    }
-    setLeftTick(0);
-    const timer = setInterval(() => {
-      setLeftTick((t) => t + 1);
-    }, 200);
-    return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeCreation?.id, activeCreation?.phase]);
-
+  // ============ 左环：预检/索引（基于真实 indexedPosts） ============
   const leftRing = useMemo(() => {
     if (activeCreation) {
-      const percent = getPhasePercent(activeCreation.phase, leftTick);
+      const percent = getPhasePercent(
+        activeCreation.phase,
+        activeCreation.indexedPosts ?? 0,
+      );
       return {
         percent,
         strokeColor: '#722ed1',
@@ -196,7 +191,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       label: '预检/索引',
       tooltip: '预检/索引 已完成',
     };
-  }, [activeCreation, leftTick]);
+  }, [activeCreation]);
 
   // ============ 中环：正在创建的任务数量 ============
   const creatingCount = creationTasks.length;
