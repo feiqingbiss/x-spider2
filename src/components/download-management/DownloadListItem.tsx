@@ -7,7 +7,7 @@ import {
   FolderFilled,
   PauseOutlined,
 } from '@ant-design/icons';
-import { dialog, fs, path, shell } from '@tauri-apps/api';
+import { dialog, shell } from '@tauri-apps/api';
 import { App, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useState } from 'react';
@@ -61,7 +61,6 @@ const ThumbnailArea = memo(
       return getCachedMediaThumbnail(mediaId) || '';
     });
 
-    // 1. 请求网络兜底图
     useEffect(() => {
       let baseUrl = task.media.url || (task.media.id ? `https://pbs.twimg.com/media/${task.media.id}` : '');
       if (!baseUrl) return;
@@ -71,9 +70,8 @@ const ThumbnailArea = memo(
       getRemoteThumbnail(remoteUrl)
         .then((src) => { setRemoteSrc(src); })
         .catch(() => {});
-    }, [task.gid]); // ✅ 仅依赖 gid，只请求一次
+    }, [task.gid]);
 
-    // 2. 任务完成后，请求本地生成的缩略图
     useEffect(() => {
       if (task.status !== AriaStatus.Complete || !task.dir || !task.fileName) return;
       
@@ -82,7 +80,7 @@ const ThumbnailArea = memo(
           if (res.src) setLocalSrc(res.src);
         })
         .catch(() => {});
-    }, [task.gid, task.status]); // ✅ 仅依赖 gid 和 status
+    }, [task.gid, task.status]);
 
     const finalSrc = localSrc || remoteSrc;
 
@@ -114,7 +112,8 @@ const TaskStatusBar = memo(({ task }: { task: DownloadTask }) => {
 
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
+    
     const { removeDownloadTask, pauseDownloadTask, unpauseDownloadTask, redownloadTask } = useDownloadStore(
       useShallow((s) => ({
         removeDownloadTask: s.removeDownloadTask,
@@ -124,49 +123,96 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       })),
     );
 
+    // ✅ 辅助函数：在前端直接拼接路径，节约一次 IPC (path.join) 调用的时间
+    const getFullPath = () => {
+      const sep = t.dir.includes('\\') ? '\\' : '/';
+      return t.dir.endsWith(sep) ? `${t.dir}${t.fileName}` : `${t.dir}${sep}${t.fileName}`;
+    };
+
     const actionRedownload: TaskAction = {
       name: '重新下载',
       onClick: async () => {
+        const hide = message.loading('正在重新添加下载任务...', 0);
         try {
           await redownloadTask(t.gid);
+          hide();
           message.success('已开始重新下载该任务');
-        } catch (err) {
+        } catch (err: any) {
+          hide();
           window.log.error(err);
-          dialog.message('无法重新下载文件', { type: 'error' });
+          message.error(`重新下载失败: ${err?.message || '未知错误'}`);
         }
       },
       icon: <DownloadOutlined />,
     };
 
-    const actionPause: TaskAction = { name: '暂停', onClick: async () => await pauseDownloadTask(t.gid), icon: <PauseOutlined />, primary: true };
-    const actionUnpause: TaskAction = { name: '继续', onClick: async () => await unpauseDownloadTask(t.gid), icon: <CaretRightFilled />, primary: true };
+    const actionPause: TaskAction = { 
+      name: '暂停', 
+      onClick: async () => {
+        try { await pauseDownloadTask(t.gid); } catch(e) { message.error('暂停失败'); }
+      }, 
+      icon: <PauseOutlined />, 
+      primary: true 
+    };
+    
+    const actionUnpause: TaskAction = { 
+      name: '继续', 
+      onClick: async () => {
+        try { await unpauseDownloadTask(t.gid); } catch(e) { message.error('继续失败'); }
+      }, 
+      icon: <CaretRightFilled />, 
+      primary: true 
+    };
     
     const actionDelete: TaskAction = {
       name: '删除',
-      onClick: async () => {
-        if (await dialog.confirm('确认删除该任务？\n已下载的文件不会被删除。', { okLabel: '删除', cancelLabel: '取消', type: 'warning', title: '删除任务' })) {
-          await removeDownloadTask(t.gid);
-        }
+      onClick: () => {
+        modal.confirm({
+          title: '确认删除该任务？',
+          content: '已下载的文件不会被删除。',
+          okText: '删除',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: async () => {
+            try {
+              await removeDownloadTask(t.gid);
+              message.success('任务已移除');
+            } catch (e) {
+              message.error('删除任务失败');
+            }
+          }
+        });
       },
-      icon: <DeleteFilled />, danger: true,
+      icon: <DeleteFilled />, 
+      danger: true,
     };
 
     const actionOpen: TaskAction = {
       name: '打开',
       onClick: async () => {
-        const filePath = await path.join(t.dir, t.fileName);
-        if (!(await fs.exists(filePath))) return dialog.message('文件不存在', { type: 'error', title: '错误' });
-        await shell.open(filePath);
+        try {
+          // ✅ 核心修复：不再使用 await fs.exists，直接触发系统打开，极速响应！
+          // 如果文件不存在，Tauri 抛出错误，会被下面的 catch 捕获
+          await shell.open(getFullPath());
+        } catch (err: any) {
+          window.log.error('打开文件失败', err);
+          message.error(`文件可能已被移除或不存在`);
+        }
       },
-      icon: <FileFilled />, primary: true,
+      icon: <FileFilled />, 
+      primary: true,
     };
 
     const actionOpenDir: TaskAction = {
       name: '打开目录',
       onClick: async () => {
-        const filePath = await path.join(t.dir, t.fileName);
-        if (!(await fs.exists(filePath))) return dialog.message('文件不存在', { type: 'error', title: '错误' });
-        await showInFolder(filePath, true);
+        try {
+          // ✅ 核心修复：直接打开文件夹，去掉 /select 探测
+          await showInFolder(t.dir, false);
+        } catch (err: any) {
+          window.log.error('打开目录失败', err);
+          message.error(`无法打开目录`);
+        }
       },
       icon: <FolderFilled />,
     };

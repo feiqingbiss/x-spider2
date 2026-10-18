@@ -27,7 +27,6 @@ function tasksEqual(a: DownloadTask[], b: DownloadTask[]): boolean {
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    // ✅ 修复：必须对比 completeSize 和 totalSize，否则进度更新会被拦截！
     if (
       x.gid !== y.gid || 
       x.status !== y.status || 
@@ -75,7 +74,6 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   useMount(() => updateListHeight());
   useEventListener('resize', updateListHeight);
 
-  // ✅ 优化：过滤和排序仅依赖于 gid 和 status 等关键字段
   const tasks = useMemo(() => {
     const filtered = R.filter(filter, downloadTasks);
     const sorted = sort ? R.sort(sort, filtered) : filtered;
@@ -88,6 +86,9 @@ export const DownloadList: React.FC<DownloadListProps> = ({
 
   // ================= 平滑滚动逻辑 =================
   const [autoScrollPaused, setAutoScrollPaused] = useState(false);
+  // ✅ 新增：鼠标悬浮状态，悬浮时停止滚动，防止点击按钮被躲避
+  const [isHovering, setIsHovering] = useState(false); 
+  
   const userPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -100,7 +101,10 @@ export const DownloadList: React.FC<DownloadListProps> = ({
   useEffect(() => {
     if (scrollTimerRef.current) clearInterval(scrollTimerRef.current);
     const el = listOuterRef.current;
-    if (!el || autoScrollPaused) return;
+    
+    // ✅ 关键修复：如果鼠标在列表上悬浮，或者用户刚刚操作过，坚决不滚动
+    if (!el || autoScrollPaused || isHovering) return; 
+    
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distanceToBottom > 200) {
       scrollTimerRef.current = setInterval(() => {
@@ -108,7 +112,7 @@ export const DownloadList: React.FC<DownloadListProps> = ({
       }, 30);
     }
     return () => { if (scrollTimerRef.current) clearInterval(scrollTimerRef.current); };
-  }, [tasks, autoScrollPaused]);
+  }, [tasks, autoScrollPaused, isHovering]);
 
   const pauseAll = async () => await pauseAllDownloadTask();
   const unpauseAll = async () => await unpauseAllDownloadTask();
@@ -151,7 +155,16 @@ export const DownloadList: React.FC<DownloadListProps> = ({
         )}
       </ul>
 
-      <div role="list" className="grow pr-4 overflow-hidden relative h-full mt-4" ref={listRef} onWheel={handleUserInteraction} onTouchStart={handleUserInteraction}>
+      <div 
+        role="list" 
+        className="grow pr-4 overflow-hidden relative h-full mt-4" 
+        ref={listRef} 
+        onWheel={handleUserInteraction} 
+        onTouchStart={handleUserInteraction}
+        // ✅ 核心修复：加入鼠标悬浮监听
+        onMouseEnter={() => setIsHovering(true)}
+        onMouseLeave={() => setIsHovering(false)}
+      >
         <FixedSizeList
           height={listHeight}
           itemCount={tasks.length}
