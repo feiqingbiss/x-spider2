@@ -76,7 +76,6 @@ const MediaThumbnail: React.FC<{
   );
 };
 
-// 抽离单张卡片，处理自己的本地路径状态
 const MediaGridItem: React.FC<{
   media: TwitterMedia & { postId: string };
   post: TwitterPost;
@@ -93,7 +92,6 @@ const MediaGridItem: React.FC<{
       }
     : undefined;
 
-  // ✅ 只有在本地存在时才显示这个按钮
   const actionOpenLocal: GridViewItemAction | undefined = localPath
     ? {
         name: '打开本地',
@@ -103,7 +101,6 @@ const MediaGridItem: React.FC<{
       }
     : undefined;
 
-  // ✅ 恢复下载功能
   const actionDownload: GridViewItemAction = {
     name: '下载',
     onClick: async () => {

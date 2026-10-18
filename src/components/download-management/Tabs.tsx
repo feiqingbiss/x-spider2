@@ -77,7 +77,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
 
   const currentTabChildren = tabs.find((t) => t.name === currentTab)?.children;
 
-  // ============ 核心：在这里集中计算统计，但仅限于依赖项变化时 ============
   const stats = useMemo(() => {
     const counts: Record<string, number> = {};
     const creatingSet = new Set<string>();
@@ -92,19 +91,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     let erroredCount = 0;
 
     for (const t of downloadTasks) {
-      // Tab 计数
       tabs.forEach((tab) => {
         if (tab.countStatus.includes(t.status)) {
           counts[tab.name] = (counts[tab.name] || 0) + 1;
         }
       });
 
-      // 状态计数
       if (['active', 'waiting', 'paused'].includes(t.status)) downloadingCount++;
       else if (t.status === 'complete') completedCount++;
       else if (t.status === 'error') erroredCount++;
 
-      // 用户进度聚合
       const u = t.post.user?.screenName?.toLowerCase();
       if (u) {
         let e = userMap.get(u);
@@ -127,19 +123,11 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
 
     const activeCreation = creationTasks.find((t) => t.status === 'active');
 
-    return {
-      counts,
-      downloadingCount,
-      completedCount,
-      erroredCount,
-      doneUsers: doneUsersCount,
-      activeCreation,
-    };
+    return { counts, downloadingCount, completedCount, erroredCount, doneUsers: doneUsersCount, activeCreation };
   }, [downloadTasks, creationTasks, sessionUserNames, completedUsers, tabs]);
 
   const activeCreation = stats.activeCreation;
   
-  // 左环
   const leftRing = useMemo(() => {
     if (activeCreation) {
       return {
@@ -153,7 +141,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     return { percent: 100, strokeColor: '#52c41a', status: 'normal' as const, label: '预检/索引', tooltip: '预检/索引 已完成' };
   }, [activeCreation]);
 
-  // 中环
   const creatingCount = creationTasks.length;
   const middleRing = useMemo(() => ({
     count: creatingCount,
@@ -163,7 +150,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     tooltip: creatingCount > 0 ? `正在创建 ${creatingCount} 个任务` : '暂无创建任务',
   }), [creatingCount]);
 
-  // 右环
   const sessionTotal = sessionUserNames.length;
   const rightRing = useMemo(() => {
     const total = sessionTotal;
@@ -178,6 +164,29 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
       tooltip: total > 0 ? `${done} / ${total} 个用户完成（${percent}%）` : '暂无下载任务',
     };
   }, [stats.doneUsers, sessionTotal]);
+
+  // ✅ 补回右侧文字描述
+  const textLine1 = useMemo(() => {
+    if (activeCreation) {
+      return `正在处理 @${activeCreation.user.screenName}`;
+    }
+    if (batchProgress && batchProgress.currentUser) {
+      return `正在处理 @${batchProgress.currentUser}`;
+    }
+    return '';
+  }, [activeCreation, batchProgress]);
+
+  const textLine2 = useMemo(() => {
+    if (activeCreation) {
+      return phaseText(activeCreation);
+    }
+    if (batchProgress) {
+      return `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`;
+    }
+    return '';
+  }, [activeCreation, batchProgress]);
+
+  const showTextBlock = textLine1 || textLine2;
 
   return (
     <div className="h-full flex flex-col">
@@ -220,6 +229,16 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             <span className="text-[10px] text-gray-500 mt-1 leading-none">{rightRing.label}</span>
           </div>
         </div>
+
+        {/* 右侧文字区 */}
+        {showTextBlock ? (
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-gray-800 truncate">{textLine1}</div>
+            {textLine2 && <div className="text-xs text-gray-500 truncate mt-0.5">{textLine2}</div>}
+          </div>
+        ) : (
+          <div className="flex-1 min-w-0" />
+        )}
       </div>
 
       <div role="tabpanel" aria-label={currentTab} className="grow relative overflow-hidden">

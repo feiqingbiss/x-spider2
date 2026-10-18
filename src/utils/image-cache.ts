@@ -9,8 +9,8 @@ import MediaType from '../enums/MediaType';
 
 const memoryCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
+const localExistsCache = new Map<string, { exists: boolean; localPath: string }>();
 
-// 统一的单队列防并发
 function createQueue(limit: number) {
   let active = 0;
   const q: (() => void)[] = [];
@@ -66,18 +66,26 @@ export function getLocalThumbnail(localPath: string): Promise<string> {
   return p;
 }
 
+// ✅ 修复：返回 { src, localPath } 对象
 export async function getMediaThumbnail(
   media: TwitterMedia,
   post: TwitterPost,
-): Promise<string> {
+): Promise<{ src: string; localPath?: string }> {
   const settings = useSettingsStore.getState();
   const mediaId = media.id || 'unknown';
   const cacheKey = `media:${mediaId}`;
 
-  if (memoryCache.has(cacheKey)) return memoryCache.get(cacheKey)!;
+  if (memoryCache.has(cacheKey)) {
+    const localInfo = localExistsCache.get(mediaId);
+    return {
+      src: memoryCache.get(cacheKey)!,
+      localPath: localInfo?.exists ? localInfo.localPath : undefined,
+    };
+  }
 
-  // 1. 计算本地路径
   let localPath = '';
+  let exists = false;
+
   if (settings.download.saveDirBase && settings.download.fileNameTemplate) {
     try {
       const templateData: FileNameTemplateData = { media, post };
@@ -91,8 +99,7 @@ export async function getMediaThumbnail(
   }
 
   let finalSrc = '';
-
-  // 2. 优先请求本地高清图（Rust 会自动判断原图是否存在并生成）
+  
   if (localPath) {
     let targetPath = localPath;
     if (media.type === MediaType.Video || media.type === MediaType.Gif) {
@@ -100,12 +107,14 @@ export async function getMediaThumbnail(
     }
     try {
       finalSrc = await getLocalThumbnail(targetPath);
+      exists = true;
+      localExistsCache.set(mediaId, { exists: true, localPath });
     } catch (e) {
-      // 本地文件不存在，走网络
+      exists = false;
+      localExistsCache.set(mediaId, { exists: false, localPath: '' });
     }
   }
 
-  // 3. 网络兜底
   if (!finalSrc) {
     let baseUrl = media.url || `https://pbs.twimg.com/media/${media.id}`;
     const qIndex = baseUrl.indexOf('?');
@@ -119,5 +128,5 @@ export async function getMediaThumbnail(
   }
 
   memoryCache.set(cacheKey, finalSrc);
-  return finalSrc;
+  return { src: finalSrc, localPath: exists ? localPath : undefined };
 }
