@@ -8,7 +8,6 @@ import {
   PauseOutlined,
 } from '@ant-design/icons';
 import { dialog, fs, path, shell } from '@tauri-apps/api';
-import { invoke } from '@tauri-apps/api/tauri';
 import { App, Progress } from 'antd';
 import * as R from 'ramda';
 import React, { memo, useEffect, useRef, useState } from 'react';
@@ -23,6 +22,11 @@ import { delay } from '../../utils';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 import { ProxyAvatar } from '../common/ProxyAvatar';
+import {
+  getLocalThumbnail,
+  getRemoteThumbnail,
+  clearImageCache,
+} from '../../utils/image-cache';
 
 export interface DownloadListItemProps {
   task: DownloadTask;
@@ -47,208 +51,90 @@ const areEqual = (
   );
 };
 
-// ============ 缩略图缓存（LRU，上限 200 条） ============
-const MAX_THUMB_CACHE_SIZE = 200;
-
-class ThumbCache {
-  private map = new Map<string, string | null>();
-
-  get(gid: string): string | null | undefined {
-    if (!this.map.has(gid)) return undefined;
-    const v = this.map.get(gid)!;
-    this.map.delete(gid);
-    this.map.set(gid, v);
-    return v;
-  }
-
-  set(gid: string, value: string | null): void {
-    if (this.map.has(gid)) this.map.delete(gid);
-    this.map.set(gid, value);
-    while (this.map.size > MAX_THUMB_CACHE_SIZE) {
-      const first = this.map.keys().next().value;
-      if (first === undefined) break;
-      this.map.delete(first);
-    }
-  }
-
-  delete(gid: string): void {
-    this.map.delete(gid);
-  }
-}
-
-const thumbCache = new ThumbCache();
-const thumbInflight = new Map<string, Promise<string | null>>();
-
-const MAX_CONCURRENT_THUMBS = 2;
-let runningThumbTasks = 0;
-const thumbWaitQueue: Array<() => void> = [];
-
-function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const task = () => {
-      runningThumbTasks++;
-      fn()
-        .then(resolve, reject)
-        .finally(() => {
-          runningThumbTasks--;
-          const next = thumbWaitQueue.shift();
-          if (next) next();
-        });
-    };
-    if (runningThumbTasks < MAX_CONCURRENT_THUMBS) task();
-    else thumbWaitQueue.push(task);
-  });
-}
-
-function loadThumbnail(gid: string, localPath: string): Promise<string | null> {
-  const cached = thumbCache.get(gid);
-  if (cached !== undefined) {
-    return Promise.resolve(cached);
-  }
-  const inflight = thumbInflight.get(gid);
-  if (inflight) return inflight;
-
-  const p = runWithLimit(async () => {
-    try {
-      const dataUrl = await invoke<string>('generate_thumbnail', {
-        path: localPath,
-      });
-      thumbCache.set(gid, dataUrl);
-      return dataUrl;
-    } catch (e) {
-      console.warn('[Thumb] generate_thumbnail failed:', e);
-      thumbCache.set(gid, null);
-      return null;
-    } finally {
-      thumbInflight.delete(gid);
-    }
-  });
-
-  thumbInflight.set(gid, p);
-  return p;
-}
-
-function clearThumbCache(gid: string) {
-  thumbCache.delete(gid);
-  thumbInflight.delete(gid);
-}
-
 const THUMB_RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000, 13000];
-
-type ThumbKind = 'local' | 'net' | 'none';
-
 const THUMB_TIMEOUT_MS = 15000;
 
-export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
-  ({ task: t, itemClientHeight }) => {
-    const { message } = App.useApp();
+const ThumbnailArea = memo(
+  ({
+    task,
+    itemClientHeight,
+  }: {
+    task: DownloadTask;
+    itemClientHeight: number;
+  }) => {
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageErrored, setImageErrored] = useState(false);
     const [imgSrc, setImgSrc] = useState('');
-    const [thumbKind, setThumbKind] = useState<ThumbKind>('none');
+    const [thumbKind, setThumbKind] = useState<'local' | 'remote' | 'none'>('none');
+    const imgSrcRef = useRef('');
 
-    const {
-      removeDownloadTask,
-      pauseDownloadTask,
-      unpauseDownloadTask,
-      redownloadTask,
-    } = useDownloadStore(
-      useShallow((s) => ({
-        removeDownloadTask: s.removeDownloadTask,
-        pauseDownloadTask: s.pauseDownloadTask,
-        unpauseDownloadTask: s.unpauseDownloadTask,
-        redownloadTask: s.redownloadTask,
-      })),
-    );
+    useEffect(() => {
+      imgSrcRef.current = imgSrc;
+    }, [imgSrc]);
 
     useEffect(() => {
       let cancelled = false;
-      setImageLoaded(false);
-      setImageErrored(false);
 
-      const netUrl = t.media.url
-        ? `${t.media.url}?format=jpg&name=thumb`
-        : '';
-
+      const netUrl = task.media.url ? `${task.media.url}?format=jpg&name=thumb` : '';
       const isVideoLike =
-        t.media.type === MediaType.Video ||
-        t.media.type === MediaType.Gif;
-
+        task.media.type === MediaType.Video || task.media.type === MediaType.Gif;
       const canUseLocal =
-        t.status === AriaStatus.Complete && !!t.dir && !!t.fileName;
+        task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
 
-      const cached = thumbCache.get(t.gid);
-      if (cached !== undefined) {
-        if (cached) {
-          setImgSrc(cached);
-          setThumbKind('local');
-        } else {
-          setImgSrc(netUrl);
-          setThumbKind(netUrl ? 'net' : 'none');
-        }
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      if (!canUseLocal) {
-        setImgSrc(netUrl);
-        setThumbKind(netUrl ? 'net' : 'none');
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      setImgSrc('');
-      setThumbKind('none');
-
-      (async () => {
+      const loadImage = async () => {
         try {
-          const localThumbPath = isVideoLike
-            ? await path.join(t.dir, `${t.fileName}.thumb.jpg`)
-            : await path.join(t.dir, t.fileName);
+          if (canUseLocal) {
+            const localThumbPath = isVideoLike
+              ? await path.join(task.dir, `${task.fileName}.thumb.jpg`)
+              : await path.join(task.dir, task.fileName);
 
-          let exists = await fs.exists(localThumbPath);
-          if (!exists && isVideoLike) {
-            for (const wait of THUMB_RETRY_DELAYS_MS) {
-              if (cancelled) return;
-              await delay(wait);
-              exists = await fs.exists(localThumbPath);
-              if (exists) break;
+            let exists = await fs.exists(localThumbPath);
+            if (!exists && isVideoLike) {
+              for (const wait of THUMB_RETRY_DELAYS_MS) {
+                if (cancelled) return;
+                await delay(wait);
+                exists = await fs.exists(localThumbPath);
+                if (exists) break;
+              }
             }
-          }
 
-          if (cancelled) return;
-
-          if (exists) {
-            const dataUrl = await loadThumbnail(t.gid, localThumbPath);
-            if (cancelled) return;
-            if (dataUrl) {
-              setImageLoaded(false);
-              setImageErrored(false);
-              setImgSrc(dataUrl);
-              setThumbKind('local');
+            if (exists && !cancelled) {
+              const localSrc = await getLocalThumbnail(localThumbPath);
+              if (!cancelled) {
+                setImageLoaded(false);
+                setImageErrored(false);
+                setImgSrc(localSrc);
+                setThumbKind('local');
+              }
               return;
             }
           }
 
-          if (!cancelled) {
-            setImgSrc(netUrl);
-            setThumbKind(netUrl ? 'net' : 'none');
+          if (netUrl && !cancelled) {
+            const remoteSrc = await getRemoteThumbnail(netUrl);
+            if (!cancelled) {
+              setImageLoaded(false);
+              setImageErrored(false);
+              setImgSrc(remoteSrc);
+              setThumbKind('remote');
+            }
+          } else if (!netUrl && !cancelled && !imgSrcRef.current) {
+            setThumbKind('none');
           }
         } catch (e) {
-          console.warn('[Thumb] local thumb load failed:', e);
-          if (!cancelled) {
-            setImgSrc(netUrl);
-            setThumbKind(netUrl ? 'net' : 'none');
+          console.warn('[Thumb] load failed', e);
+          if (!cancelled && !imgSrcRef.current) {
+            setThumbKind('none');
           }
         }
-      })();
+      };
+
+      loadImage();
 
       return () => {
         cancelled = true;
       };
-    }, [t.gid, t.status, t.dir, t.fileName, t.media.url, t.media.type]);
+    }, [task.gid, task.status, task.dir, task.fileName, task.media.url, task.media.type]);
 
     const settledRef = useRef(false);
     useEffect(() => {
@@ -264,8 +150,101 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       return () => window.clearTimeout(timer);
     }, [imgSrc]);
 
+    const tagText =
+      thumbKind === 'local' ? 'L' : thumbKind === 'remote' ? 'R' : '-';
+    const tagColor = imageErrored
+      ? 'rgba(220,38,38,0.85)'
+      : thumbKind === 'local'
+        ? 'rgba(22,163,74,0.85)'
+        : thumbKind === 'remote'
+          ? 'rgba(37,99,235,0.85)'
+          : 'rgba(107,114,128,0.85)';
+
+    return (
+      <div
+        className="shrink-0 overflow-hidden relative bg-gray-100"
+        style={{ width: itemClientHeight, height: itemClientHeight }}
+      >
+        {!imgSrc && (
+          <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
+            <span>生成缩略图中...</span>
+          </div>
+        )}
+        {imgSrc && !imageLoaded && !imageErrored && (
+          <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs pointer-events-none absolute inset-0 z-10">
+            <span>加载中...</span>
+          </div>
+        )}
+        {imgSrc && imageErrored && (
+          <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
+            预览不可用
+          </div>
+        )}
+        <a
+          href={
+            task.post.user?.screenName && task.post.id
+              ? buildPostUrl(task.post.user.screenName, task.post.id)
+              : 'javascript:void(0);'
+          }
+          target="_blank"
+          rel="noreferrer"
+          className="block w-full h-full"
+          title="打开推文页"
+        >
+          {imgSrc && (
+            <img
+              key={task.gid}
+              src={imgSrc}
+              className={`w-full h-full object-cover transition-all duration-300 transform hover:scale-105 ${
+                imageLoaded && !imageErrored
+                  ? 'opacity-100 block'
+                  : 'opacity-0 hidden'
+              }`}
+              onLoad={() => {
+                settledRef.current = true;
+                setImageLoaded(true);
+              }}
+              onError={() => {
+                settledRef.current = true;
+                setImageErrored(true);
+                setImageLoaded(true);
+              }}
+              alt="缩略图"
+            />
+          )}
+        </a>
+        <div
+          className="absolute right-1 bottom-1 px-1 rounded text-[10px] leading-4 text-white font-bold z-20"
+          style={{ background: tagColor }}
+        >
+          {tagText}
+        </div>
+      </div>
+    );
+  },
+);
+
+export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
+  ({ task: t, itemClientHeight }) => {
+    const { message } = App.useApp();
+
+    const {
+      removeDownloadTask,
+      pauseDownloadTask,
+      unpauseDownloadTask,
+      redownloadTask,
+    } = useDownloadStore(
+      useShallow((s) => ({
+        removeDownloadTask: s.removeDownloadTask,
+        pauseDownloadTask: s.pauseDownloadTask,
+        unpauseDownloadTask: s.unpauseDownloadTask,
+        redownloadTask: s.redownloadTask,
+      })),
+    );
+
     const handleRemove = async (gid: string) => {
-      clearThumbCache(gid);
+      // 可以清理内存中的缓存，但不要影响本地文件
+      clearImageCache(`https://pbs.twimg.com/media/${t.media.id}?format=jpg&name=thumb`);
       await removeDownloadTask(gid);
     };
 
@@ -273,14 +252,11 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       name: '重新下载',
       onClick: async () => {
         try {
-          clearThumbCache(t.gid);
           await redownloadTask(t.gid);
           message.success('已开始重新下载该任务');
         } catch (err) {
           window.log.error(err);
-          dialog.message('无法重新下载文件', {
-            type: 'error',
-          });
+          dialog.message('无法重新下载文件', { type: 'error' });
         }
       },
       icon: <DownloadOutlined />,
@@ -289,18 +265,14 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
 
     const actionPause: TaskAction = {
       name: '暂停',
-      onClick: async () => {
-        await pauseDownloadTask(t.gid);
-      },
+      onClick: async () => await pauseDownloadTask(t.gid),
       icon: <PauseOutlined />,
       primary: true,
     };
 
     const actionUnpause: TaskAction = {
       name: '继续',
-      onClick: async () => {
-        await unpauseDownloadTask(t.gid);
-      },
+      onClick: async () => await unpauseDownloadTask(t.gid),
       icon: <CaretRightFilled />,
       primary: true,
     };
@@ -328,10 +300,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       onClick: async () => {
         const filePath = await path.join(t.dir, t.fileName);
         if (!(await fs.exists(filePath))) {
-          dialog.message('文件不存在', {
-            type: 'error',
-            title: '错误',
-          });
+          dialog.message('文件不存在', { type: 'error', title: '错误' });
           return;
         }
         await shell.open(filePath);
@@ -345,10 +314,7 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       onClick: async () => {
         const filePath = await path.join(t.dir, t.fileName);
         if (!(await fs.exists(filePath))) {
-          dialog.message('文件不存在', {
-            type: 'error',
-            title: '错误',
-          });
+          dialog.message('文件不存在', { type: 'error', title: '错误' });
           return;
         }
         await showInFolder(filePath, true);
@@ -356,84 +322,12 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
       icon: <FolderFilled />,
     };
 
-    const tagText =
-      thumbKind === 'local' ? 'L' : thumbKind === 'net' ? 'N' : '-';
-    const tagColor = imageErrored
-      ? 'rgba(220,38,38,0.85)'
-      : thumbKind === 'local'
-        ? 'rgba(22,163,74,0.85)'
-        : thumbKind === 'net'
-          ? 'rgba(37,99,235,0.85)'
-          : 'rgba(107,114,128,0.85)';
-
     return (
       <div
         role="listitem"
         className="bg-white border-[1px] border-gray-300 rounded-md flex overflow-hidden"
       >
-        <div
-          className="shrink-0 overflow-hidden relative bg-gray-100"
-          style={{
-            width: itemClientHeight,
-            height: itemClientHeight,
-          }}
-        >
-          {!imgSrc && (
-            <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
-              <span>生成缩略图中...</span>
-              <span className="text-[10px] mt-1 opacity-70">本地文件</span>
-            </div>
-          )}
-          {imgSrc && !imageLoaded && !imageErrored && (
-            <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
-              <span>加载中...</span>
-              {thumbKind === 'local' && (
-                <span className="text-[10px] mt-1 opacity-70">本地缩略图</span>
-              )}
-            </div>
-          )}
-          {imgSrc && imageErrored && (
-            <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">
-              预览不可用
-            </div>
-          )}
-          <a
-            href={
-              t.post.user?.screenName && t.post.id
-                ? buildPostUrl(t.post.user.screenName, t.post.id)
-                : 'javascript:void(0);'
-            }
-            target="_blank"
-            rel="noreferrer"
-            className="block w-full h-full"
-            title="打开推文页"
-          >
-            {imgSrc && (
-              <img
-                src={imgSrc}
-                className={`w-full h-full object-cover transition-transform transform hover:scale-105 ${
-                  imageLoaded && !imageErrored ? 'block' : 'hidden'
-                }`}
-                onLoad={() => {
-                  settledRef.current = true;
-                  setImageLoaded(true);
-                }}
-                onError={() => {
-                  settledRef.current = true;
-                  setImageErrored(true);
-                  setImageLoaded(true);
-                }}
-                alt="缩略图"
-              />
-            )}
-          </a>
-          <div
-            className="absolute right-1 bottom-1 px-1 rounded text-[10px] leading-4 text-white font-bold"
-            style={{ background: tagColor }}
-          >
-            {tagText}
-          </div>
-        </div>
+        <ThumbnailArea task={t} itemClientHeight={itemClientHeight} />
 
         <div className="ml-4 overflow-hidden pr-4 w-full h-full">
           <p

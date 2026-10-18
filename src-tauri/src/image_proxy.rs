@@ -27,7 +27,6 @@ struct DownloadConfig {
     save_dir_base: Option<String>,
 }
 
-/// 读取用户的下载目录配置（settings.json → state.download.saveDirBase）
 fn get_save_dir_base() -> Option<String> {
     let appdata = std::env::var("APPDATA").ok()?;
     let path = PathBuf::from(appdata).join("x-spider").join("settings.json");
@@ -44,32 +43,40 @@ fn get_save_dir_base() -> Option<String> {
     }
 }
 
-/// 读取系统默认下载目录（%USERPROFILE%\Downloads）
 fn get_default_download_dir() -> Option<PathBuf> {
     let user_profile = std::env::var("USERPROFILE").ok()?;
     Some(PathBuf::from(user_profile).join("Downloads"))
 }
 
-/// 图片缓存目录：<下载目录>/.x-spider-cache
-/// 如果用户没配置下载目录，回退到系统默认下载目录。
+/// ✅ 修改：服务器端缩略图存到 <下载目录>/.x-spider-cache/remote
 fn get_cache_dir() -> Result<PathBuf, String> {
     let base_dir: PathBuf = if let Some(save_dir) = get_save_dir_base() {
         PathBuf::from(save_dir)
     } else if let Some(default_download) = get_default_download_dir() {
         default_download
     } else {
-        // 最后的兜底：%LOCALAPPDATA%\x-spider
         let local = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
             .map_err(|_| "无法获取缓存目录")?;
         local.join("x-spider")
     };
 
-    let dir = base_dir.join(".x-spider-cache");
+    let dir = base_dir.join(".x-spider-cache").join("remote");
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     }
     Ok(dir)
+}
+
+/// 旧版系统缓存目录（仅用于后台清理遗留垃圾）
+fn get_legacy_system_cache_dir() -> Option<PathBuf> {
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let dir = PathBuf::from(local).join("x-spider").join("image-cache");
+    if dir.exists() {
+        Some(dir)
+    } else {
+        None
+    }
 }
 
 fn get_proxy_url() -> Option<String> {
@@ -114,8 +121,7 @@ async fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
         .map(|b| b.to_vec())
 }
 
-/// 走软件内配置的代理下载图片并缓存到 <下载目录>/.x-spider-cache
-/// 返回本地缓存文件的绝对路径。
+/// 走软件内配置的代理下载图片并缓存到 <下载目录>/.x-spider-cache/remote
 #[tauri::command]
 pub async fn download_image_to_cache(url: String) -> Result<String, String> {
     let cache_dir = get_cache_dir()?;
@@ -125,29 +131,28 @@ pub async fn download_image_to_cache(url: String) -> Result<String, String> {
     let file_name = format!("{:x}.jpg", hash);
     let file_path = cache_dir.join(&file_name);
 
-    // 缓存命中：触发一次读取刷新 atime，直接返回路径
     if file_path.exists() {
-        let _ = fs::read(&file_path);
+        let _ = fs::read(&file_path); // 刷新 atime
         return Ok(file_path.to_string_lossy().to_string());
     }
 
-    // 缓存未命中：走代理下载并写入缓存
     let bytes = fetch_image(&url).await?;
     fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// 清理超过 max_age_days 天未被访问的图片缓存。
-/// 判断依据优先级：accessed 时间 > modified 时间。
-/// 同时会清理历史遗留的 .bin 后缀缓存文件。
-/// 返回被删除的文件数量。
+/// 只清理旧版遗留在系统目录下的缓存，不动 .x-spider-cache
 pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
-    let cache_dir = get_cache_dir()?;
+    let system_cache_dir = match get_legacy_system_cache_dir() {
+        Some(dir) => dir,
+        None => return Ok(0),
+    };
+
     let now = SystemTime::now();
     let max_age = Duration::from_secs(max_age_days * 24 * 3600);
-
     let mut deleted = 0usize;
-    let entries = match fs::read_dir(&cache_dir) {
+
+    let entries = match fs::read_dir(&system_cache_dir) {
         Ok(e) => e,
         Err(_) => return Ok(0),
     };
@@ -164,7 +169,6 @@ pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
         };
 
         let last_used = metadata.accessed().or_else(|_| metadata.modified());
-
         let last_used = match last_used {
             Ok(t) => t,
             Err(_) => continue,
