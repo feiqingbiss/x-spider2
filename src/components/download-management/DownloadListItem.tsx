@@ -10,7 +10,7 @@ import {
 import { dialog, fs, path, shell } from '@tauri-apps/api';
 import { App, Progress } from 'antd';
 import * as R from 'ramda';
-import React, { memo, useEffect, useRef, useState } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { DownloadTask } from '../../interfaces/DownloadTask';
 import { useDownloadStore } from '../../stores/download';
@@ -20,11 +20,8 @@ import { AriaStatus } from '../../utils/aria2';
 import { StatusText } from './StatusText';
 import { TaskAction, TaskActions } from './TaskActions';
 import { ProxyAvatar } from '../common/ProxyAvatar';
-import {
-  getRemoteThumbnail,
-  getMediaThumbnail,
-  clearImageCache,
-} from '../../utils/image-cache';
+import { SmoothImage } from '../common/SmoothImage';
+import { getRemoteThumbnail, getMediaThumbnail } from '../../utils/image-cache';
 
 export interface DownloadListItemProps {
   task: DownloadTask;
@@ -32,154 +29,72 @@ export interface DownloadListItemProps {
   itemGap: number;
 }
 
-const areEqual = (
-  prevProps: DownloadListItemProps,
-  nextProps: DownloadListItemProps,
-) => {
+const areEqual = (prevProps: DownloadListItemProps, nextProps: DownloadListItemProps) => {
   const prev = prevProps.task;
   const next = nextProps.task;
-  return (
-    prev.gid === next.gid &&
-    prev.status === next.status &&
-    prev.completeSize === next.completeSize &&
-    prev.totalSize === next.totalSize &&
-    prev.error === next.error &&
-    prev.fileName === next.fileName &&
-    prev.updatedAt === next.updatedAt
-  );
+  // ✅ 核心拦截：只要 gid、状态、文件名不变，这个组件根本不会重渲染
+  return prev.gid === next.gid && prev.status === next.status && prev.fileName === next.fileName;
 };
 
 const ThumbnailArea = memo(
-  ({
-    task,
-    itemClientHeight,
-  }: {
-    task: DownloadTask;
-    itemClientHeight: number;
-  }) => {
-    const [displaySrc, setDisplaySrc] = useState('');
-    const [imageErrored, setImageErrored] = useState(false);
-    const displaySrcRef = useRef(displaySrc);
-
-    useEffect(() => {
-      displaySrcRef.current = displaySrc;
-    }, [displaySrc]);
+  ({ task, itemClientHeight }: { task: DownloadTask; itemClientHeight: number }) => {
+    const [imgSrc, setImgSrc] = useState('');
 
     useEffect(() => {
       let cancelled = false;
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-      const netUrl = task.media.url
-        ? `${task.media.url}?format=jpg&name=thumb`
-        : '';
-      const canUseLocal =
-        task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
+      const netUrl = task.media.url ? `${task.media.url}?format=jpg&name=thumb` : '';
+      const canUseLocal = task.status === AriaStatus.Complete && !!task.dir && !!task.fileName;
 
       const load = async () => {
-        // 1. 立即并行发起网络图请求（垫底）
-        if (netUrl) {
-          getRemoteThumbnail(netUrl)
-            .then((remoteSrc) => {
-              if (!cancelled && !displaySrcRef.current) {
-                setDisplaySrc(remoteSrc);
-              }
-            })
-            .catch(() => {});
-        }
-
-        // 2. 如果已完成，并行请求本地高清图
-        if (canUseLocal && !cancelled) {
+        if (canUseLocal) {
           try {
             const res = await getMediaThumbnail(task.media, task.post);
-            if (!cancelled && res.src !== displaySrcRef.current) {
-              // 随机延迟 500ms ~ 2000ms，让几百个任务的替换动作错开
-              const delay = 500 + Math.random() * 1500;
-              timeoutId = setTimeout(() => {
-                if (!cancelled) {
-                  setDisplaySrc(res.src);
-                }
-              }, delay);
-            }
-          } catch (e) {
-            console.warn('[Thumb] local generate failed', e);
-          }
+            if (!cancelled) setImgSrc(res);
+            return;
+          } catch (e) {}
+        }
+        if (netUrl) {
+          try {
+            const remoteSrc = await getRemoteThumbnail(netUrl);
+            if (!cancelled) setImgSrc(remoteSrc);
+          } catch (e) {}
         }
       };
-
       load();
-
-      return () => {
-        cancelled = true;
-        if (timeoutId) clearTimeout(timeoutId);
-      };
+      return () => { cancelled = true; };
     }, [task.gid, task.status, task.dir, task.fileName, task.media, task.post]);
 
-    const handleError = () => {
-      setImageErrored(true);
-    };
-
     return (
-      <div
-        className="shrink-0 overflow-hidden relative bg-gray-100"
-        style={{ width: itemClientHeight, height: itemClientHeight }}
-      >
-        {!displaySrc && (
+      <div className="shrink-0 relative bg-gray-100" style={{ width: itemClientHeight, height: itemClientHeight }}>
+        {!imgSrc && (
           <div className="w-full h-full bg-gray-200 animate-pulse flex flex-col items-center justify-center text-gray-400 text-xs">
             <span>加载中...</span>
           </div>
         )}
-
-        {displaySrc && imageErrored && (
-          <div className="w-full h-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs absolute inset-0 z-10">
-            预览不可用
-          </div>
-        )}
-
-        <a
-          href={
-            task.post.user?.screenName && task.post.id
-              ? buildPostUrl(task.post.user.screenName, task.post.id)
-              : 'javascript:void(0);'
-          }
-          target="_blank"
-          rel="noreferrer"
-          className="block w-full h-full"
-          title="打开推文页"
-        >
-          {displaySrc && (
-            <img
-              src={displaySrc}
-              className={`w-full h-full object-cover transition-all duration-300 transform hover:scale-105 ${
-                imageErrored ? 'opacity-0' : 'opacity-100'
-              }`}
-              onError={handleError}
-              alt="缩略图"
-            />
-          )}
+        <a href={task.post.user?.screenName && task.post.id ? buildPostUrl(task.post.user.screenName, task.post.id) : 'javascript:void(0);'} target="_blank" rel="noreferrer" className="block w-full h-full" title="打开推文页">
+          {imgSrc && <SmoothImage src={imgSrc} className="w-full h-full transition-transform duration-300 transform hover:scale-105" />}
         </a>
       </div>
     );
   },
-  (prevProps, nextProps) => {
-    return (
-      prevProps.task.gid === nextProps.task.gid &&
-      prevProps.task.status === nextProps.task.status &&
-      prevProps.task.fileName === nextProps.task.fileName &&
-      prevProps.itemClientHeight === nextProps.itemClientHeight
-    );
-  },
+  (prev, next) => prev.task.gid === next.task.gid && prev.task.status === next.task.status && prev.itemClientHeight === next.itemClientHeight
 );
+
+// ✅ 将高频更新的进度和状态独立出去，避免影响外部 DOM
+const TaskStatusBar = memo(({ task }: { task: DownloadTask }) => {
+  const percent = task.totalSize > 0 ? Math.round((task.completeSize / task.totalSize) * 100) : 0;
+  return (
+    <div className="mt-0">
+      <Progress percent={percent} className="mb-0 mr-0" />
+      <div><StatusText task={task} /></div>
+    </div>
+  );
+});
 
 export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
   ({ task: t, itemClientHeight }) => {
     const { message } = App.useApp();
-
-    const {
-      removeDownloadTask,
-      pauseDownloadTask,
-      unpauseDownloadTask,
-      redownloadTask,
-    } = useDownloadStore(
+    const { removeDownloadTask, pauseDownloadTask, unpauseDownloadTask, redownloadTask } = useDownloadStore(
       useShallow((s) => ({
         removeDownloadTask: s.removeDownloadTask,
         pauseDownloadTask: s.pauseDownloadTask,
@@ -187,13 +102,6 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         redownloadTask: s.redownloadTask,
       })),
     );
-
-    const handleRemove = async (gid: string) => {
-      clearImageCache(
-        `https://pbs.twimg.com/media/${t.media.id}?format=jpg&name=thumb`,
-      );
-      await removeDownloadTask(gid);
-    };
 
     const actionRedownload: TaskAction = {
       name: '重新下载',
@@ -207,131 +115,73 @@ export const DownloadListItem: React.FC<DownloadListItemProps> = memo(
         }
       },
       icon: <DownloadOutlined />,
-      primary: false,
     };
 
-    const actionPause: TaskAction = {
-      name: '暂停',
-      onClick: async () => await pauseDownloadTask(t.gid),
-      icon: <PauseOutlined />,
-      primary: true,
-    };
-
-    const actionUnpause: TaskAction = {
-      name: '继续',
-      onClick: async () => await unpauseDownloadTask(t.gid),
-      icon: <CaretRightFilled />,
-      primary: true,
-    };
-
+    const actionPause: TaskAction = { name: '暂停', onClick: async () => await pauseDownloadTask(t.gid), icon: <PauseOutlined />, primary: true };
+    const actionUnpause: TaskAction = { name: '继续', onClick: async () => await unpauseDownloadTask(t.gid), icon: <CaretRightFilled />, primary: true };
+    
     const actionDelete: TaskAction = {
       name: '删除',
       onClick: async () => {
-        if (
-          await dialog.confirm('确认删除该任务？\n已下载的文件不会被删除。', {
-            okLabel: '删除',
-            cancelLabel: '取消',
-            type: 'warning',
-            title: '删除任务',
-          })
-        ) {
-          await handleRemove(t.gid);
+        if (await dialog.confirm('确认删除该任务？\n已下载的文件不会被删除。', { okLabel: '删除', cancelLabel: '取消', type: 'warning', title: '删除任务' })) {
+          await removeDownloadTask(t.gid);
         }
       },
-      icon: <DeleteFilled />,
-      danger: true,
+      icon: <DeleteFilled />, danger: true,
     };
 
     const actionOpen: TaskAction = {
       name: '打开',
       onClick: async () => {
         const filePath = await path.join(t.dir, t.fileName);
-        if (!(await fs.exists(filePath))) {
-          dialog.message('文件不存在', { type: 'error', title: '错误' });
-          return;
-        }
+        if (!(await fs.exists(filePath))) return dialog.message('文件不存在', { type: 'error', title: '错误' });
         await shell.open(filePath);
       },
-      icon: <FileFilled />,
-      primary: true,
+      icon: <FileFilled />, primary: true,
     };
 
     const actionOpenDir: TaskAction = {
       name: '打开目录',
       onClick: async () => {
         const filePath = await path.join(t.dir, t.fileName);
-        if (!(await fs.exists(filePath))) {
-          dialog.message('文件不存在', { type: 'error', title: '错误' });
-          return;
-        }
+        if (!(await fs.exists(filePath))) return dialog.message('文件不存在', { type: 'error', title: '错误' });
         await showInFolder(filePath, true);
       },
       icon: <FolderFilled />,
     };
 
     return (
-      <div
-        role="listitem"
-        className="bg-white border-[1px] border-gray-300 rounded-md flex overflow-hidden"
-      >
+      <div role="listitem" className="bg-white border-[1px] border-gray-300 rounded-md flex overflow-hidden">
         <ThumbnailArea task={t} itemClientHeight={itemClientHeight} />
 
-        <div className="ml-4 overflow-hidden pr-4 w-full h-full">
-          <p
-            title={t.fileName}
-            className="text-ellipsis overflow-hidden whitespace-nowrap font-bold mt-2"
-          >
-            {t.fileName}
-          </p>
-          <a
-            href={
-              t.post.user?.screenName
-                ? buildUserUrl(t.post.user?.screenName)
-                : 'javascript:void(0);'
-            }
-            title={`跳转到 ${
-              t.post.user?.name || t.post.user?.screenName || '未知用户'
-            } 的主页`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs flex items-center space-x-1 w-fit text-ant-color-text-secondary bg-gray-100 p-1 rounded-full pr-2 overflow-hidden"
-          >
-            <ProxyAvatar src={t.post.user?.avatar} size={20} />
-            <span>{t.post.user?.name || '未知用户'}</span>
-            {t.post.user?.screenName && <span>@{t.post.user.screenName}</span>}
-          </a>
-          <div className="mt-2">
-            <TaskActions
-              actions={R.cond([
-                [R.equals('active'), R.always([actionPause, actionDelete])],
-                [R.equals('paused'), R.always([actionUnpause, actionDelete])],
-                [R.equals('error'), R.always([actionRedownload, actionDelete])],
-                [
-                  R.equals('complete'),
-                  R.always([
-                    actionOpen,
-                    actionOpenDir,
-                    actionRedownload,
-                    actionDelete,
-                  ]),
-                ],
-                [R.T, R.always([])],
-              ])(t.status)}
-            />
-          </div>
-          <div className="mt-0">
-            <Progress
-              percent={
-                t.totalSize > 0
-                  ? Math.round((t.completeSize / t.totalSize) * 100)
-                  : 0
-              }
-              className="mb-0 mr-0"
-            />
-          </div>
+        <div className="ml-4 overflow-hidden pr-4 w-full h-full flex flex-col justify-between py-1">
           <div>
-            <StatusText task={t} />
+            <p title={t.fileName} className="text-ellipsis overflow-hidden whitespace-nowrap font-bold mt-1">{t.fileName}</p>
+            <a
+              href={t.post.user?.screenName ? buildUserUrl(t.post.user?.screenName) : 'javascript:void(0);'}
+              title={`跳转到 ${t.post.user?.name || t.post.user?.screenName || '未知用户'} 的主页`}
+              target="_blank" rel="noreferrer"
+              className="text-xs flex items-center space-x-1 w-fit text-ant-color-text-secondary bg-gray-100 p-1 rounded-full pr-2 overflow-hidden mt-1"
+            >
+              <ProxyAvatar src={t.post.user?.avatar} size={20} />
+              <span>{t.post.user?.name || '未知用户'}</span>
+              {t.post.user?.screenName && <span>@{t.post.user.screenName}</span>}
+            </a>
+            <div className="mt-2">
+              <TaskActions
+                actions={R.cond([
+                  [R.equals('active'), R.always([actionPause, actionDelete])],
+                  [R.equals('paused'), R.always([actionUnpause, actionDelete])],
+                  [R.equals('error'), R.always([actionRedownload, actionDelete])],
+                  [R.equals('complete'), R.always([actionOpen, actionOpenDir, actionRedownload, actionDelete])],
+                  [R.T, R.always([])],
+                ])(t.status)}
+              />
+            </div>
           </div>
+          
+          {/* ✅ 进度条由独立组件渲染，高频更新被彻底隔离 */}
+          <TaskStatusBar task={t} />
         </div>
       </div>
     );
