@@ -18,9 +18,7 @@
 - Cookie 登录
 
 ## 软件截图
-
-![screenshot-homepage](./assets/screenshot-homepage.jpg)
-
-![screenshot-settings](./assets/screenshot-settings.jpg)
-
-![screenshot-downloading](./assets/screenshot-downloading.jpg)
+<img width="1133" height="816" alt="image" src="https://github.com/user-attachments/assets/84094b86-1f0f-42c3-a367-4a4dc5362f02" />
+<img width="1133" height="816" alt="image" src="https://github.com/user-attachments/assets/5c9ce8a6-a9ff-48b2-9ffe-0014cd7265e2" />
+<img width="1133" height="816" alt="image" src="https://github.com/user-attachments/assets/116531b1-fd3f-4937-9113-d985b4c97713" />
+<img width="1133" height="816" alt="image" src="https://github.com/user-attachments/assets/85b702e4-500a-433b-9981-5d881a9eb028" />
