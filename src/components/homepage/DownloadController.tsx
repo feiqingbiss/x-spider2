@@ -10,6 +10,7 @@ import { useHomepageStore } from '../../stores/homepage';
 import { useSettingsStore } from '../../stores/settings';
 import { useAppStateStore } from '../../stores/app-state';
 import { addUserToDownloadList } from '../../utils/homepage-helpers';
+import { DownloadOutlined } from '@ant-design/icons';
 
 export const DownloadController: React.FC = () => {
   const { message } = App.useApp();
@@ -56,61 +57,73 @@ export const DownloadController: React.FC = () => {
   };
 
   return (
-    <section className="p-4 bg-white rounded-md mt-3 border-[1px]">
-      <h2 className="font-bold mb-4">下载配置</h2>
-      <Form<DownloadFilter>
-        layout="inline"
-        initialValues={filter}
-        onValuesChange={(_, values) => {
-          setFilter(values);
-        }}
-      >
-        <Form.Item name="dateRange" label="日期范围">
-          <DatePicker.RangePicker
-            presets={[
-              { label: '至今', value: [dayjs.unix(0), dayjs()] },
-              {
-                label: '最近 7 天',
-                value: [dayjs().subtract(7, 'day'), dayjs()],
-              },
-              {
-                label: '最近 15 天',
-                value: [dayjs().subtract(15, 'day'), dayjs()],
-              },
-              {
-                label: '最近 1 个月',
-                value: [dayjs().subtract(1, 'month'), dayjs()],
-              },
-              {
-                label: '最近 6 个月',
-                value: [dayjs().subtract(6, 'month'), dayjs()],
-              },
-              {
-                label: '最近 1 年',
-                value: [dayjs().subtract(1, 'year'), dayjs()],
-              },
-            ]}
-            disabledDate={(cur) => cur && cur > dayjs().endOf('day')}
-          />
-        </Form.Item>
-        <Form.Item name="mediaTypes" label="媒体类型">
-          <Checkbox.Group
-            options={[
-              { label: '视频', value: MediaType.Video },
-              { label: '照片', value: MediaType.Photo },
-              { label: 'GIF', value: MediaType.Gif },
-            ]}
-          />
-        </Form.Item>
-      </Form>
-      <hr className="my-4" />
-      <section className="flex space-x-2">
-        <Button type="primary" onClick={onStartDownload}>
-          <Space>
-            <span>开始下载</span>
-          </Space>
+    <section className="p-4 bg-white rounded-md border-[1px] flex flex-col justify-between h-full">
+      <div>
+        <h2 className="font-bold mb-4 flex items-center text-gray-800">
+          全局下载筛选配置
+          <span className="text-xs text-gray-400 font-normal ml-2">(对单独下载及批量下载均生效)</span>
+        </h2>
+        <Form<DownloadFilter>
+          layout="inline"
+          initialValues={filter}
+          onValuesChange={(_, values) => {
+            setFilter(values);
+          }}
+          className="gap-y-4"
+        >
+          <Form.Item name="dateRange" label="日期范围">
+            <DatePicker.RangePicker
+              presets={[
+                { label: '至今', value: [dayjs.unix(0), dayjs()] },
+                {
+                  label: '最近 7 天',
+                  value: [dayjs().subtract(7, 'day'), dayjs()],
+                },
+                {
+                  label: '最近 15 天',
+                  value: [dayjs().subtract(15, 'day'), dayjs()],
+                },
+                {
+                  label: '最近 1 个月',
+                  value: [dayjs().subtract(1, 'month'), dayjs()],
+                },
+                {
+                  label: '最近 6 个月',
+                  value: [dayjs().subtract(6, 'month'), dayjs()],
+                },
+                {
+                  label: '最近 1 年',
+                  value: [dayjs().subtract(1, 'year'), dayjs()],
+                },
+              ]}
+              disabledDate={(cur) => cur && cur > dayjs().endOf('day')}
+            />
+          </Form.Item>
+          <Form.Item name="mediaTypes" label="媒体类型">
+            <Checkbox.Group
+              options={[
+                { label: '视频', value: MediaType.Video },
+                { label: '照片', value: MediaType.Photo },
+                { label: 'GIF', value: MediaType.Gif },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </div>
+      
+      <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-3">
+        <Button 
+          type="primary" 
+          onClick={onStartDownload} 
+          disabled={!user}
+          icon={<DownloadOutlined />}
+        >
+          下载当前用户
         </Button>
-      </section>
+        {!user && (
+          <span className="text-xs text-gray-400">请先在顶部搜索并加载需要下载的用户</span>
+        )}
+      </div>
     </section>
   );
 };

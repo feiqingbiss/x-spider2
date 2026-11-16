@@ -31,7 +31,6 @@ export const Homepage: React.FC = () => {
   const forceFullScan = useAppStateStore((s) => s.forceFullScan);
   const setForceFullScan = useAppStateStore((s) => s.setForceFullScan);
   const userListRevision = useAppStateStore((s) => s.userListRevision);
-  // ✅ 同步到全局，供下载管理页使用
   const setUserListTotal = useAppStateStore((s) => s.setUserListTotal);
 
   const saveDirBase = useSettingsStore((s) => s.download.saveDirBase);
@@ -77,7 +76,7 @@ export const Homepage: React.FC = () => {
     <div className="flex flex-col h-screen overflow-hidden bg-white">
       <PageHeader />
 
-      <div className="shrink-0 px-4 pb-2">
+      <div className="shrink-0 px-4 pb-2 space-y-4">
         <SearchSection
           keyword={keyword}
           setKeyword={setKeyword}
@@ -89,27 +88,31 @@ export const Homepage: React.FC = () => {
           onClearHistory={clearSearchHistory}
         />
 
-        <BatchDownloadCard
-          userListCount={userListCount}
-          onManageList={() => setManageModalVisible(true)}
-          forceFullScan={forceFullScan}
-          onToggleForceFullScan={setForceFullScan}
-          isBatchRunning={isBatchRunning}
-          batchProgress={batchProgress}
-          onBatchDownload={batchDownload}
-          onCancelBatch={cancelBatch}
-        />
+        {/* ✅ 配置与批量下载并排显示 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <DownloadController />
+          <BatchDownloadCard
+            userListCount={userListCount}
+            onManageList={() => setManageModalVisible(true)}
+            forceFullScan={forceFullScan}
+            onToggleForceFullScan={setForceFullScan}
+            isBatchRunning={isBatchRunning}
+            batchProgress={batchProgress}
+            onBatchDownload={batchDownload}
+            onCancelBatch={cancelBatch}
+          />
+        </div>
 
+        {/* ✅ 当前搜索的用户信息 */}
         {userInfo.data && (
-          <div className="mt-4">
-            <DownloadController />
+          <div className="mt-4 animate-fade-in">
             <UserInfoCard user={userInfo.data} />
           </div>
         )}
       </div>
 
       {userInfo.data && (
-        <section className="relative grow overflow-hidden border-t border-gray-100">
+        <section className="relative grow overflow-hidden border-t border-gray-100 mt-2">
           <PostListGridView />
         </section>
       )}
