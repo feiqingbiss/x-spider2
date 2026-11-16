@@ -477,6 +477,10 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     if (cur.includes(n)) return;
     set({ completedUsers: [...cur, n] });
   },
+
+  // ✅ 新增限流状态
+  cooldownUntil: 0,
+  setCooldownUntil: (time) => set({ cooldownUntil: time }),
 }));
 
 // ================= 自动同步（只查询视口内任务） =================

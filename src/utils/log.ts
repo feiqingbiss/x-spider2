@@ -5,6 +5,7 @@ import { path, fs } from '@tauri-apps/api';
 
 const DEFAULT_CATEGORY = 'APP';
 const FLUSH_INTERVAL_MS = 500;
+const LOG_RETENTION_DAYS = 30; // ✅ 日志保留天数
 
 // ✅ 日志文件名（模块加载时固定，确保所有日志写入同一个文件）
 const LOG_FILE_NAME = `${dayjs().format('YYYY-MM-DD HHmmss')}.log`;
@@ -13,6 +14,36 @@ const LOG_FILE_NAME = `${dayjs().format('YYYY-MM-DD HHmmss')}.log`;
 const pendingLines: string[] = [];
 let isWriting = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ✅ 启动后清理超过 30 天的旧日志
+async function cleanupOldLogs() {
+  try {
+    const logDir = await path.appLogDir();
+    if (!(await fs.exists(logDir))) return;
+    const entries = await fs.readDir(logDir);
+    const now = Date.now();
+    const maxAge = LOG_RETENTION_DAYS * 24 * 3600 * 1000;
+
+    for (const entry of entries) {
+      if (entry.name && entry.name.endsWith('.log')) {
+        // 根据文件名解析日期 (格式: YYYY-MM-DD HHmmss.log)
+        const match = entry.name.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (match) {
+          const fileDate = new Date(match[1]).getTime();
+          if (now - fileDate > maxAge) {
+            const filePath = await path.join(logDir, entry.name);
+            await fs.removeFile(filePath).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// 延迟 5 秒执行，不阻塞应用启动
+setTimeout(cleanupOldLogs, 5000);
 
 async function flushLogFile() {
   if (isWriting || pendingLines.length === 0) return;
@@ -118,7 +149,11 @@ export class Logger implements ILogger {
       })
       .join(' ')}`;
 
-    // ✅ 推入队列，由 flushLogFile 串行写入，避免并发冲突
+    // ✅ 如果队列积压超过 2000 条，强制清理旧数据防止内存溢出
+    if (pendingLines.length > 2000) {
+      pendingLines.splice(0, pendingLines.length - 1000);
+    }
+
     pendingLines.push(msg);
     scheduleFlush();
   }

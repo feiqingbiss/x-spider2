@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/tauri';
-import { path } from '@tauri-apps/api'; // ✅ 修复：移除未使用的 fs
+import { path } from '@tauri-apps/api';
 import { TwitterMedia } from '../interfaces/TwitterMedia';
 import { TwitterPost } from '../interfaces/TwitterPost';
 import { useSettingsStore } from '../stores/settings';
@@ -7,9 +7,32 @@ import { resolveVariables } from './file-name-template';
 import { FileNameTemplateData } from '../interfaces/FileNameTemplateData';
 import MediaType from '../enums/MediaType';
 
-const memoryCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 2000; // ✅ 限制最大缓存 2000 张图片
+
+class LRUCache<V> {
+  private cache = new Map<string, V>();
+  constructor(private maxSize: number) {}
+  get(key: string): V | undefined {
+    if (!this.cache.has(key)) return undefined;
+    const val = this.cache.get(key)!;
+    // 刷新活跃度：删了重新加
+    this.cache.delete(key);
+    this.cache.set(key, val);
+    return val;
+  }
+  set(key: string, value: V) {
+    if (this.cache.has(key)) this.cache.delete(key);
+    else if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey) this.cache.delete(firstKey);
+    }
+    this.cache.set(key, value);
+  }
+}
+
+const memoryCache = new LRUCache<string>(MAX_CACHE_SIZE);
+const localExistsCache = new LRUCache<{ exists: boolean; localPath: string }>(MAX_CACHE_SIZE);
 const inflight = new Map<string, Promise<string>>();
-const localExistsCache = new Map<string, { exists: boolean; localPath: string }>();
 
 export function getCachedRemoteThumbnail(url: string): string | undefined {
   return memoryCache.get(url);
@@ -38,10 +61,11 @@ function createQueue(limit: number) {
 }
 
 const remoteQueue = createQueue(30); 
-const localQueue = createQueue(4);   // ✅ 4 个并发，平衡性能和速度
+const localQueue = createQueue(4);
 
 export function getRemoteThumbnail(url: string): Promise<string> {
-  if (memoryCache.has(url)) return Promise.resolve(memoryCache.get(url)!);
+  const cached = memoryCache.get(url);
+  if (cached) return Promise.resolve(cached);
   if (inflight.has(url)) return inflight.get(url)!;
 
   const p = remoteQueue(() =>
@@ -59,7 +83,8 @@ export function getRemoteThumbnail(url: string): Promise<string> {
 
 export function getLocalThumbnail(localPath: string): Promise<string> {
   const cacheKey = `local:${localPath}`;
-  if (memoryCache.has(cacheKey)) return Promise.resolve(memoryCache.get(cacheKey)!);
+  const cached = memoryCache.get(cacheKey);
+  if (cached) return Promise.resolve(cached);
   if (inflight.has(cacheKey)) return inflight.get(cacheKey)!;
 
   const p = localQueue(() =>
@@ -83,10 +108,11 @@ export async function getMediaThumbnail(
   const mediaId = media.id || 'unknown';
   const cacheKey = `media:${mediaId}`;
 
-  if (memoryCache.has(cacheKey)) {
+  const cachedSrc = memoryCache.get(cacheKey);
+  if (cachedSrc) {
     const localInfo = localExistsCache.get(mediaId);
     return {
-      src: memoryCache.get(cacheKey)!,
+      src: cachedSrc,
       localPath: localInfo?.exists ? localInfo.localPath : undefined,
     };
   }

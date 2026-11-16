@@ -11,8 +11,8 @@ use tauri::Manager;
 
 const SINGLE_INSTANCE_PORT: u16 = 39123;
 
-// 图片缓存保留天数（超过自动清理）
-const IMAGE_CACHE_MAX_AGE_DAYS: u64 = 90;
+// ✅ 图片缓存自动保留天数改为 30 天
+const IMAGE_CACHE_MAX_AGE_DAYS: u64 = 30;
 
 #[cfg(target_os = "windows")]
 fn kill_aria2c() {
@@ -55,15 +55,11 @@ fn main() {
 
     // 后台异步清理过期图片缓存（不阻塞启动）
     std::thread::spawn(|| {
-        // 稍作延迟，避免和启动时的其他 I/O 抢占资源
         std::thread::sleep(std::time::Duration::from_secs(3));
         match image_proxy::cleanup_old_cache(IMAGE_CACHE_MAX_AGE_DAYS) {
             Ok(0) => {}
             Ok(n) => {
-                eprintln!(
-                    "[Cache] 已清理 {} 个超过 {} 天的图片缓存",
-                    n, IMAGE_CACHE_MAX_AGE_DAYS
-                );
+                eprintln!("[Cache] 已清理 {} 个超过 {} 天的图片缓存", n, IMAGE_CACHE_MAX_AGE_DAYS);
             }
             Err(e) => {
                 eprintln!("[Cache] 清理图片缓存失败: {}", e);
@@ -77,6 +73,7 @@ fn main() {
           network::network_fetch,
           image::generate_thumbnail,
           image_proxy::download_image_to_cache,
+          image_proxy::clear_image_cache, // ✅ 注册清理命令
         ])
         .setup(|app| {
             let handle = app.handle();

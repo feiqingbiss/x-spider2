@@ -102,6 +102,8 @@ function setGlobalCooldown(ms: number): void {
   if (until > globalCooldownUntil) {
     globalCooldownUntil = until;
     logFn('warn', `[限流] 设置全局冷却 ${Math.ceil(ms / 1000)} 秒`);
+    // ✅ 推送状态给 UI
+    useDownloadStore.getState().setCooldownUntil(until);
   }
 }
 
@@ -137,6 +139,7 @@ function recordSuccess(): void {
     rateLimitStreak = 0;
     successStreak = 0;
     setGlobalCooldown(WARMUP_COOLDOWN_MS);
+    useDownloadStore.getState().setCooldownUntil(0); // ✅ 解除 UI 展示
   }
 }
 

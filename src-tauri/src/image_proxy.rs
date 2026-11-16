@@ -92,7 +92,6 @@ fn get_proxy_url() -> Option<String> {
 }
 
 async fn fetch_image(url: &str) -> Result<Vec<u8>, String> {
-    // ✅ 修改：将超时时间从 30 秒缩短为 10 秒，防止弱网导致大量请求堆积卡死
     let mut builder =
         reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
 
@@ -189,5 +188,42 @@ pub fn cleanup_old_cache(max_age_days: u64) -> Result<usize, String> {
         }
     }
 
+    Ok(deleted)
+}
+
+// ✅ 修改：手动清理逻辑，只删除超过 30 天的旧图片缓存
+#[tauri::command]
+pub async fn clear_image_cache() -> Result<usize, String> {
+    let cache_dir = get_cache_dir()?;
+    let now = SystemTime::now();
+    let max_age = Duration::from_secs(30 * 24 * 3600); // 30天间隔期
+    let mut deleted = 0usize;
+
+    if let Ok(entries) = fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("jpg") {
+                let metadata = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let last_used = metadata.modified().or_else(|_| metadata.accessed());
+                let last_used = match last_used {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let elapsed = match now.duration_since(last_used) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                
+                if elapsed > max_age {
+                    if fs::remove_file(&path).is_ok() {
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+    }
     Ok(deleted)
 }

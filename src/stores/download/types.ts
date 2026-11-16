@@ -23,9 +23,7 @@ export interface DownloadStore {
   autoSyncTaskIds: string[];
   setAutoSyncTaskIds: (ids: string[]) => void;
   createDownloadTask: (params: CreateDownloadTaskParams) => Promise<void>;
-  batchCreateDownloadTask: (
-    paramsList: CreateDownloadTaskParams[],
-  ) => Promise<void>;
+  batchCreateDownloadTask: (paramsList: CreateDownloadTaskParams[]) => Promise<void>;
   pauseDownloadTask: (gid: string) => Promise<void>;
   pauseAllDownloadTask: () => Promise<void>;
   unpauseDownloadTask: (gid: string) => Promise<void>;
@@ -37,10 +35,12 @@ export interface DownloadStore {
   batchUpdateDownloadTasks: (tasks: DownloadTask[]) => void;
   redownloadTask: (gid: string) => Promise<void>;
   batchRedownloadTask: (gid: string[]) => Promise<void>;
+  
   creationTasks: CreationTask[];
   createCreationTask: (user: TwitterUser, filter: DownloadFilter) => void;
   removeCreationTask: (id: string) => void;
   updateCreationTask: (task: CreationTask) => void;
+  
   batchProgress: BatchProgress | null;
   setBatchProgress: (progress: BatchProgress | null) => void;
 
@@ -49,12 +49,12 @@ export interface DownloadStore {
   batchAbortController: AbortController | null;
   setBatchAbortController: (ctrl: AbortController | null) => void;
 
-  // ✅ 本次下载会话涉及的用户集合（右环分母）
   sessionUserNames: string[];
   addSessionUsers: (names: string[]) => void;
-
-  // ✅ 本次会话中"无需新增下载任务即为完成"的用户
-  //    （预检发现 100% 已下载，或无媒体）
   completedUsers: string[];
   addCompletedUser: (screenName: string) => void;
+
+  // ✅ 新增：全局限流冷却截止时间
+  cooldownUntil: number;
+  setCooldownUntil: (time: number) => void;
 }

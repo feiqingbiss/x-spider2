@@ -22,9 +22,7 @@ export type AriaGid = string;
 
 class Aria2 {
   #ready = false;
-  get ready() {
-    return this.#ready;
-  }
+  get ready() { return this.#ready; }
   #secret = crypto.randomUUID();
   #port = 6801;
   #ws?: WebSocket;
@@ -34,9 +32,9 @@ class Aria2 {
   #globalOptions: Record<string, string> = {};
   #callbackMap = new Map<number, (data: any) => void>();
   
-  // ✅ 新增：重连控制
   #isReconnecting = false;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  #reconnectAttempts = 0; // ✅ 新增重连次数记录
 
   get #tokenParam() {
     return `token:${this.#secret}`;
@@ -59,10 +57,6 @@ class Aria2 {
     if (this.#ready) throw new Error('Aria2 is already ready');
 
     this.#log = log.category('ARIA');
-    /**
-     * 启动 Aria2c 子进程
-     * ✅ 新增 --retry-wait=10 和 --max-tries=5，休眠唤醒后网络断开时 aria2 会自动重试
-     */
     const args = [
       '--enable-rpc',
       '--rpc-secret',
@@ -80,10 +74,7 @@ class Aria2 {
     this.#log?.info('Wait for listening...');
     await new Promise((resolve, reject) => {
       const onStdout = (message: string) => {
-        if (
-          !this.ready &&
-          message.includes('IPv4 RPC: listening on TCP port')
-        ) {
+        if (!this.ready && message.includes('IPv4 RPC: listening on TCP port')) {
           this.#log?.info('Child process launched');
           this.#command!.stdout.removeListener('data', onStdout);
           this.#command!.stdout.removeListener('data', onStderr);
@@ -119,11 +110,13 @@ class Aria2 {
         () => {
           this.#log?.info('Websocket connected');
           this.#ready = true;
+          const wasReconnecting = this.#isReconnecting;
           this.#isReconnecting = false;
+          this.#reconnectAttempts = 0;
           this.#ws!.removeEventListener('error', onError);
           resolve(null);
-          // 重连成功后，通知外部
-          if (this.#isReconnecting) this.onReady.emit();
+          // ✅ 修复：使用 wasReconnecting 避免前面的重置导致判断失效
+          if (wasReconnecting) this.onReady.emit();
         },
         { once: true },
       );
@@ -133,19 +126,21 @@ class Aria2 {
     });
   }
 
-  // ✅ 新增：WebSocket 断线自动重连逻辑
   async #_onWsClose() {
     this.#ready = false;
     this.#log?.warn('Websocket closed. Pending callbacks will be flushed.');
     
-    // 清理所有等待中的回调，避免前端 Promise 永远等待
     this.#callbackMap.forEach((fn) => fn({ error: { message: 'Websocket disconnected' } }));
     this.#callbackMap.clear();
 
     if (this.#isReconnecting) return;
     this.#isReconnecting = true;
+    this.#reconnectAttempts++;
 
-    this.#log?.info('Scheduling WebSocket reconnect in 3s...');
+    // ✅ 修复：加入指数退避，最多等待 30 秒
+    const delay = Math.min(1000 * Math.pow(2, this.#reconnectAttempts), 30000);
+    this.#log?.info(`Scheduling WebSocket reconnect in ${delay / 1000}s...`);
+    
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = setTimeout(async () => {
       try {
@@ -153,9 +148,9 @@ class Aria2 {
       } catch (e) {
         this.#log?.error('Reconnect failed, will retry via onclose', e);
         this.#isReconnecting = false;
-        this.#_onWsClose(); // 失败则继续重试
+        this.#_onWsClose(); 
       }
-    }, 3000);
+    }, delay);
   }
 
   #_onBeforeUnload() {

@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
-import React from 'react';
-import { Card, Button, Checkbox, DatePicker, Form, Space, Switch, Tooltip, Progress, App } from 'antd';
+import React, { useState, useEffect } from 'react';
+import { Card, Button, Checkbox, DatePicker, Form, Space, Switch, Tooltip, Progress, App, Alert } from 'antd';
 import dayjs from 'dayjs';
 import { 
   CloudDownloadOutlined, 
@@ -35,13 +35,8 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
   onCancelBatch,
 }) => {
   const { message } = App.useApp();
-
   const { filter, setFilter, user } = useHomepageStore(
-    (s) => ({
-      filter: s.filter,
-      setFilter: s.setFilter,
-      user: s.userInfo.data,
-    })
+    (s) => ({ filter: s.filter, setFilter: s.setFilter, user: s.userInfo.data })
   );
   const createCreationTask = useDownloadStore((s) => s.createCreationTask);
   const addSessionUsers = useDownloadStore((s) => s.addSessionUsers);
@@ -49,24 +44,30 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
   const forceFullScan = useAppStateStore((s) => s.forceFullScan);
   const setForceFullScan = useAppStateStore((s) => s.setForceFullScan);
   const bumpUserListRevision = useAppStateStore((s) => s.bumpUserListRevision);
+  
+  // ✅ 获取限流状态
+  const cooldownUntil = useDownloadStore((s) => s.cooldownUntil);
+  const [now, setNow] = useState(Date.now());
+
+  // ✅ 倒计时刷新器
+  useEffect(() => {
+    if (cooldownUntil <= now) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [cooldownUntil, now]);
+
+  const isCoolingDown = cooldownUntil > now;
+  const remainingSeconds = Math.ceil((cooldownUntil - now) / 1000);
 
   const onStartSingleDownload = async () => {
-    if (!user) {
-      message.error('请先加载用户');
-      return;
-    }
-    if (!filter.mediaTypes || filter.mediaTypes.length === 0) {
-      message.error('请至少选择一个媒体类型');
-      return;
-    }
-
+    if (!user) { message.error('请先加载用户'); return; }
+    if (!filter.mediaTypes || filter.mediaTypes.length === 0) { message.error('请至少选择一个媒体类型'); return; }
     try {
       if (user.screenName) {
         const added = await addUserToDownloadList(user.screenName, saveDirBase);
         if (added) bumpUserListRevision();
         addSessionUsers([user.screenName]);
       }
-      // 这里的 createCreationTask 底层会读取 useAppStateStore 的 forceFullScan
       createCreationTask(user, filter);
       message.success('已成功创建当前用户的下载任务');
     } catch (err: any) {
@@ -76,24 +77,22 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
   };
 
   return (
-    <Card
-      size="small"
-      className="bg-blue-50/20 border-blue-100/50 shadow-sm"
-      bodyStyle={{ padding: '16px' }}
-    >
+    <Card size="small" className="bg-blue-50/20 border-blue-100/50 shadow-sm" bodyStyle={{ padding: '16px' }}>
+      {/* ✅ 429 限流警告提示 */}
+      {isCoolingDown && (
+        <Alert
+          message={`Twitter 接口请求过于频繁，已自动限流冷却 ${remainingSeconds} 秒...`}
+          type="warning"
+          showIcon
+          className="mb-4 animate-pulse"
+        />
+      )}
+
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        {/* 左侧：全局筛选配置 */}
         <div className="flex items-center flex-wrap gap-4">
-          <Form<DownloadFilter>
-            layout="inline"
-            initialValues={filter}
-            onValuesChange={(_, values) => setFilter(values)}
-            className="gap-y-2"
-          >
+          <Form<DownloadFilter> layout="inline" initialValues={filter} onValuesChange={(_, values) => setFilter(values)} className="gap-y-2">
             <Form.Item name="dateRange" label="日期范围" className="mb-0">
-              <DatePicker.RangePicker
-                size="small"
-                className="w-[240px]"
+              <DatePicker.RangePicker size="small" className="w-[240px]"
                 presets={[
                   { label: '至今', value: [dayjs.unix(0), dayjs()] },
                   { label: '最近 7 天', value: [dayjs().subtract(7, 'day'), dayjs()] },
@@ -106,34 +105,19 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
               />
             </Form.Item>
             <Form.Item name="mediaTypes" label="媒体类型" className="mb-0">
-              <Checkbox.Group
-                options={[
-                  { label: '视频', value: MediaType.Video },
-                  { label: '照片', value: MediaType.Photo },
-                  { label: 'GIF', value: MediaType.Gif },
-                ]}
-              />
+              <Checkbox.Group options={[
+                { label: '视频', value: MediaType.Video },
+                { label: '照片', value: MediaType.Photo },
+                { label: 'GIF', value: MediaType.Gif },
+              ]} />
             </Form.Item>
           </Form>
         </div>
 
-        {/* 右侧：操作控制区 */}
         <div className="flex items-center flex-wrap gap-3 shrink-0">
-          <Button icon={<FileTextOutlined />} onClick={onManageList}>
-            管理名单 ({userListCount})
-          </Button>
-
-          <Tooltip
-            title={
-              forceFullScan
-                ? '当前：完整遍历。将忽略预检结果，遍历用户所有历史帖子（速度较慢，但最全）'
-                : '当前：快速补全。前 20 条已下载 ≥ 15% 时仅补缺失；< 15% 时全量遍历'
-            }
-          >
-            <div
-              className="flex items-center cursor-pointer select-none px-2 bg-white rounded-md border border-gray-200 py-1"
-              onClick={() => setForceFullScan(!forceFullScan)}
-            >
+          <Button icon={<FileTextOutlined />} onClick={onManageList}>管理名单 ({userListCount})</Button>
+          <Tooltip title={forceFullScan ? '当前：完整遍历。将忽略预检结果，遍历用户所有历史帖子（速度较慢，但最全）' : '当前：快速补全。前 20 条已下载 ≥ 15% 时仅补缺失；< 15% 时全量遍历'}>
+            <div className="flex items-center cursor-pointer select-none px-2 bg-white rounded-md border border-gray-200 py-1" onClick={() => setForceFullScan(!forceFullScan)}>
               <Switch size="small" checked={forceFullScan} onChange={(v) => setForceFullScan(v)} />
               <span className={forceFullScan ? 'ml-2 text-orange-500 font-bold text-xs' : 'ml-2 text-gray-400 text-xs'}>
                 {forceFullScan ? <><ThunderboltFilled className="mr-1" />完整遍历</> : '快速补全'}
@@ -142,20 +126,12 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
           </Tooltip>
 
           <Space>
-            <Button
-              type="primary"
-              icon={<DownloadOutlined />}
-              onClick={onStartSingleDownload}
-              disabled={!user}
-            >
+            <Button type="primary" icon={<DownloadOutlined />} onClick={onStartSingleDownload} disabled={!user || isCoolingDown}>
               下载当前用户
             </Button>
-            <Button
-              type="primary"
-              danger={isBatchRunning}
-              icon={isBatchRunning ? <CloseCircleOutlined /> : <CloudDownloadOutlined />}
+            <Button type="primary" danger={isBatchRunning} icon={isBatchRunning ? <CloseCircleOutlined /> : <CloudDownloadOutlined />}
               onClick={isBatchRunning ? onCancelBatch : onBatchDownload}
-              disabled={!isBatchRunning && !!batchProgress}
+              disabled={(!isBatchRunning && !!batchProgress) || (!isBatchRunning && isCoolingDown)}
               className="font-bold"
             >
               {isBatchRunning ? '取消批量' : '一键批量下载'}
@@ -164,16 +140,9 @@ export const HomepageActionBar: React.FC<HomepageActionBarProps> = ({
         </div>
       </div>
 
-      {/* 底部进度条 */}
       {batchProgress && (
         <div className="mt-3 pt-3 border-t border-blue-100/50">
-          <Progress
-            percent={batchProgress.total > 0 ? Math.round((batchProgress.completed / batchProgress.total) * 100) : 0}
-            format={() => `${batchProgress.completed}/${batchProgress.total}`}
-            status="active"
-            strokeColor="#1d9bf0"
-            size="small"
-          />
+          <Progress percent={batchProgress.total > 0 ? Math.round((batchProgress.completed / batchProgress.total) * 100) : 0} format={() => `${batchProgress.completed}/${batchProgress.total}`} status="active" strokeColor="#1d9bf0" size="small" />
           <div className="text-xs text-gray-500 mt-1 flex justify-between">
             <span>正在处理：{batchProgress.currentUser}</span>
             <span>批量任务受左侧配置及遍历开关控制</span>

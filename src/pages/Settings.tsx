@@ -7,13 +7,14 @@ import {
   DownloadOutlined,
   GlobalOutlined,
   BugOutlined,
+  DeleteOutlined, // ✅ 新增导入
 } from '@ant-design/icons';
 import Joi from 'joi';
 import { SavePathSelector } from '../components/settings/SavePathSelector';
 import { Button, Input, Switch, Space, App } from 'antd';
 import { FileNameTemplateInput } from '../components/settings/FileNameTemplateInput';
 import { showInFolder } from '../utils/shell';
-import { path, fs, shell } from '@tauri-apps/api';
+import { path, fs, shell, invoke } from '@tauri-apps/api'; // ✅ 新增导入 invoke
 import { useDownloadStore } from '../stores/download';
 import { formatVersion } from '../utils/version';
 
@@ -90,6 +91,16 @@ export const Settings: React.FC = () => {
     }
   };
 
+  // ✅ 清理图片缓存
+  const clearImageCache = async () => {
+    try {
+      const count = await invoke<number>('clear_image_cache');
+      message.success(`已清理 ${count} 个图片缓存文件`);
+    } catch (err: any) {
+      message.error(`清理缓存失败: ${err?.message || '未知错误'}`);
+    }
+  };
+
   return (
     <>
       <PageHeader />
@@ -114,7 +125,6 @@ export const Settings: React.FC = () => {
           <SavePathSelector required />
         </Item>
 
-        {/* ✅ 文件夹模板在上 */}
         <Item
           label="文件夹模板"
           settingKey="dirTemplate"
@@ -123,7 +133,6 @@ export const Settings: React.FC = () => {
           <FileNameTemplateInput />
         </Item>
 
-        {/* ✅ 文件名模板在下 */}
         <Item
           label="文件名模板"
           settingKey="fileNameTemplate"
@@ -162,6 +171,9 @@ export const Settings: React.FC = () => {
           </Button>
           <Button icon={<BugOutlined />} onClick={exportDebugReport}>
             导出诊断报告
+          </Button>
+          <Button danger icon={<DeleteOutlined />} onClick={clearImageCache}>
+            清理图片缓存
           </Button>
         </Space>
       </Section>

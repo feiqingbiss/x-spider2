@@ -26,7 +26,6 @@ import {
 } from '../utils/homepage-helpers';
 
 export interface UseBatchDownloadOptions {
-  /** 批量完成后回调，用于刷新名单数等 */
   onFinished?: () => Promise<void> | void;
 }
 
@@ -35,9 +34,7 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
 
   const isBatchRunning = useDownloadStore((s) => s.isBatchRunning);
   const setIsBatchRunning = useDownloadStore((s) => s.setIsBatchRunning);
-  const setBatchAbortController = useDownloadStore(
-    (s) => s.setBatchAbortController,
-  );
+  const setBatchAbortController = useDownloadStore((s) => s.setBatchAbortController);
 
   const batchProgress = useDownloadStore((s) => s.batchProgress);
   const setBatchProgress = useDownloadStore((s) => s.setBatchProgress);
@@ -123,15 +120,15 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
           Math.min(i + BATCH_SIZE, usernames.length),
         );
 
-        await Promise.all(
-          batch.map(async (name, j) => {
-            const index = i + j;
-            setBatchProgress({
-              total: progressTotal,
-              completed: progressBase + index,
-              currentUser: name,
-            });
+        // ✅ 优化：一次性标记该批次正在处理的人，不在每个用户完成时都重排
+        setBatchProgress({
+          total: progressTotal,
+          completed: progressBase + i,
+          currentUser: batch.join(', '),
+        });
 
+        await Promise.all(
+          batch.map(async (name) => {
             const ok = await processOneUser(
               name,
               successCounter,
@@ -139,14 +136,15 @@ export function useBatchDownload(opts: UseBatchDownloadOptions = {}) {
               signal,
             );
             if (!ok && !signal.aborted) failed.push(name);
-
-            setBatchProgress({
-              total: progressTotal,
-              completed: progressBase + index + 1,
-              currentUser: name,
-            });
           }),
         );
+
+        // ✅ 批次结束后，统一更新已完成的进度
+        setBatchProgress({
+          total: progressTotal,
+          completed: progressBase + i + batch.length,
+          currentUser: batch[batch.length - 1],
+        });
 
         if (i + BATCH_SIZE < usernames.length) {
           await delay(BATCH_DELAY_MS);

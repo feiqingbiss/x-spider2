@@ -36,14 +36,8 @@ function getPhasePercent(phase: CreationPhase | undefined, indexedPosts: number 
   switch (phase) {
     case 'waiting': return 0;
     case 'precheck': return 5;
-    case 'index': {
-      const base = 10;
-      return Math.min(55, Math.round(base + (indexedPosts / 2000) * 45));
-    }
-    case 'tweets': {
-      const base = 55;
-      return Math.min(99, Math.round(base + (indexedPosts / 2000) * 44));
-    }
+    case 'index': return Math.min(55, Math.round(10 + (indexedPosts / 2000) * 45));
+    case 'tweets': return Math.min(99, Math.round(55 + (indexedPosts / 2000) * 44));
     case 'creating': return 99;
     case 'done': return 100;
     default: return 0;
@@ -72,11 +66,12 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   );
 
   useEffect(() => {
-    if (!currentTab) setCurrentTab(tabs[0].name);
+    if (!currentTab && tabs.length > 0) setCurrentTab(tabs[0].name);
   }, [currentTab, tabs, setCurrentTab]);
 
   const currentTabChildren = tabs.find((t) => t.name === currentTab)?.children;
 
+  // ✅ 性能优化：将深度计算逻辑收敛
   const stats = useMemo(() => {
     const counts: Record<string, number> = {};
     const creatingSet = new Set<string>();
@@ -91,11 +86,11 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     let erroredCount = 0;
 
     for (const t of downloadTasks) {
-      tabs.forEach((tab) => {
+      for (const tab of tabs) {
         if (tab.countStatus.includes(t.status)) {
           counts[tab.name] = (counts[tab.name] || 0) + 1;
         }
-      });
+      }
 
       if (['active', 'waiting', 'paused'].includes(t.status)) downloadingCount++;
       else if (t.status === 'complete') completedCount++;
@@ -130,13 +125,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
   
   const leftRing = useMemo(() => {
     if (activeCreation) {
-      return {
-        percent: getPhasePercent(activeCreation.phase, activeCreation.indexedPosts ?? 0),
-        strokeColor: '#722ed1',
-        status: 'active' as const,
-        label: '预检/索引',
-        tooltip: phaseText(activeCreation),
-      };
+      return { percent: getPhasePercent(activeCreation.phase, activeCreation.indexedPosts ?? 0), strokeColor: '#722ed1', status: 'active' as const, label: '预检/索引', tooltip: phaseText(activeCreation) };
     }
     return { percent: 100, strokeColor: '#52c41a', status: 'normal' as const, label: '预检/索引', tooltip: '预检/索引 已完成' };
   }, [activeCreation]);
@@ -165,24 +154,15 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
     };
   }, [stats.doneUsers, sessionTotal]);
 
-  // ✅ 补回右侧文字描述
   const textLine1 = useMemo(() => {
-    if (activeCreation) {
-      return `正在处理 @${activeCreation.user.screenName}`;
-    }
-    if (batchProgress && batchProgress.currentUser) {
-      return `正在处理 @${batchProgress.currentUser}`;
-    }
+    if (activeCreation) return `正在处理 @${activeCreation.user.screenName}`;
+    if (batchProgress && batchProgress.currentUser) return `正在处理 @${batchProgress.currentUser}`;
     return '';
   }, [activeCreation, batchProgress]);
 
   const textLine2 = useMemo(() => {
-    if (activeCreation) {
-      return phaseText(activeCreation);
-    }
-    if (batchProgress) {
-      return `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`;
-    }
+    if (activeCreation) return phaseText(activeCreation);
+    if (batchProgress) return `${batchProgress.completed} / ${batchProgress.total} 个用户已处理`;
     return '';
   }, [activeCreation, batchProgress]);
 
@@ -197,15 +177,7 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
             const count = stats.counts[tab.name] || 0;
             return (
               <li key={tab.name}>
-                <button
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setCurrentTab(tab.name)}
-                  className={clsx(
-                    'relative flex flex-col items-center px-5 py-2.5 rounded-md transition-all border min-w-[72px]',
-                    active ? 'bg-white border-blue-200 shadow-sm' : 'bg-gray-50 border-gray-200 hover:bg-gray-100',
-                  )}
-                >
+                <button role="tab" aria-selected={active} onClick={() => setCurrentTab(tab.name)} className={clsx('relative flex flex-col items-center px-5 py-2.5 rounded-md transition-all border min-w-[72px]', active ? 'bg-white border-blue-200 shadow-sm' : 'bg-gray-50 border-gray-200 hover:bg-gray-100')}>
                   <span className={clsx('text-2xl font-bold leading-none', active ? 'text-ant-color-primary' : 'text-gray-700')}>{count}</span>
                   <span className={clsx('text-xs mt-1', active ? 'text-gray-700 font-medium' : 'text-gray-500')}>{tab.name}</span>
                   {active && <span className="absolute -bottom-[3px] left-2 right-2 h-[3px] bg-ant-color-primary rounded-full" />}
@@ -230,7 +202,6 @@ export const Tabs: React.FC<TabsProps> = ({ tabs }) => {
           </div>
         </div>
 
-        {/* 右侧文字区 */}
         {showTextBlock ? (
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-gray-800 truncate">{textLine1}</div>
